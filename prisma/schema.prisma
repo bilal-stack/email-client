@@ -1,0 +1,78 @@
+// Foundation schema. Adds Auth.js Prisma adapter models + our MailAccount extension.
+// Thread, Message, AISummary, AIDraft, PriorityScore land in their own specs.
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ─── Auth.js v5 + Prisma adapter required models ─────────────────────────
+model User {
+  id            String        @id @default(cuid())
+  name          String?
+  email         String?       @unique
+  emailVerified DateTime?
+  image         String?
+  accounts      Account[]
+  sessions      Session[]
+  mailAccounts  MailAccount[]
+  createdAt     DateTime      @default(now())
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+// ─── Our mailbox extension ───────────────────────────────────────────────
+// One row per connected mailbox. encryptedSecret is AES-256-GCM ciphertext
+// holding the OAuth tokens (or, for IMAP, the SMTP/IMAP password).
+model MailAccount {
+  id              String    @id @default(cuid())
+  userId          String
+  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider        String // "gmail" | "graph" | "imap"
+  emailAddress    String
+  displayName     String?
+  encryptedSecret Bytes
+  secretIv        Bytes
+  secretTag       Bytes
+  syncCursor      String? // historyId | delta token | UIDVALIDITY+UID
+  lastSyncedAt    DateTime?
+  createdAt       DateTime  @default(now())
+
+  @@unique([userId, provider, emailAddress])
+}

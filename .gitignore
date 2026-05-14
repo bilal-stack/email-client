@@ -1,0 +1,43 @@
+# dependencies
+node_modules
+.pnpm-store
+
+# next
+.next
+out
+next-env.d.ts
+
+# build
+dist
+build
+
+# env
+.env
+.env.local
+.env.*.local
+
+# logs
+*.log
+npm-debug.log*
+
+# editor
+.vscode
+.idea
+*.swp
+.DS_Store
+Thumbs.db
+
+# test
+coverage
+playwright-report
+test-results
+*.db
+*.db-journal
+prisma/dev.db*
+prisma/test.db*
+
+# typescript
+*.tsbuildinfo
+
+# turbo
+.turbo
