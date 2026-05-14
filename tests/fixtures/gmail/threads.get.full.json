@@ -1,0 +1,84 @@
+{
+  "id": "t-aaa1",
+  "historyId": "200",
+  "messages": [
+    {
+      "id": "m-001",
+      "threadId": "t-aaa1",
+      "labelIds": ["INBOX", "UNREAD"],
+      "snippet": "Plain text only message",
+      "internalDate": "1700000000000",
+      "payload": {
+        "mimeType": "text/plain",
+        "headers": [
+          { "name": "From", "value": "Alice Sender <alice@example.com>" },
+          { "name": "To", "value": "Bob Receiver <bob@example.com>" },
+          { "name": "Subject", "value": "Welcome to the project" },
+          { "name": "Message-Id", "value": "<m-001@example.com>" }
+        ],
+        "body": {
+          "size": 16,
+          "data": "SGVsbG8gcGxhaW4gdGV4dA"
+        }
+      }
+    },
+    {
+      "id": "m-002",
+      "threadId": "t-aaa1",
+      "labelIds": ["INBOX"],
+      "snippet": "Multipart alternative",
+      "internalDate": "1700000100000",
+      "payload": {
+        "mimeType": "multipart/alternative",
+        "headers": [
+          { "name": "From", "value": "\"Carol\" <carol@example.com>" },
+          { "name": "To", "value": "alice@example.com, bob@example.com" },
+          { "name": "Cc", "value": "Dan <dan@example.com>" },
+          { "name": "Subject", "value": "Re: Welcome to the project" },
+          { "name": "In-Reply-To", "value": "<m-001@example.com>" },
+          { "name": "References", "value": "<m-001@example.com>" }
+        ],
+        "parts": [
+          {
+            "mimeType": "text/plain",
+            "body": { "size": 16, "data": "SGVsbG8gcGxhaW4gdGV4dA" }
+          },
+          {
+            "mimeType": "text/html",
+            "body": { "size": 9, "data": "SGVsbG9IdG1s" }
+          }
+        ]
+      }
+    },
+    {
+      "id": "m-003",
+      "threadId": "t-aaa1",
+      "labelIds": ["INBOX"],
+      "snippet": "With attachment",
+      "internalDate": "1700000200000",
+      "payload": {
+        "mimeType": "multipart/mixed",
+        "headers": [
+          { "name": "From", "value": "alice@example.com" },
+          { "name": "To", "value": "bob@example.com" },
+          { "name": "Subject", "value": "File attached" },
+          { "name": "References", "value": "<m-001@example.com> <m-002@example.com>" }
+        ],
+        "parts": [
+          {
+            "mimeType": "text/html",
+            "body": { "size": 13, "data": "SHRtbEZvckF0dGFjaA" }
+          },
+          {
+            "mimeType": "application/pdf",
+            "filename": "report.pdf",
+            "body": {
+              "size": 4096,
+              "attachmentId": "att-r1"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+{
+  "threads": [
+    { "id": "t-aaa1", "snippet": "Welcome to the project", "historyId": "100" },
+    { "id": "t-bbb2", "snippet": "Quarterly metrics review", "historyId": "101" }
+  ],
+  "nextPageToken": "PAGE2_TOKEN",
+  "resultSizeEstimate": 2
+}

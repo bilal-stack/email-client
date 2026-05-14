@@ -16,9 +16,10 @@ Specs are completed in order. Each spec is its own folder under `.agent-os/specs
 - **imap-provider** — IMAP/SMTP via `imapflow` + `nodemailer`. IDLE in an Inngest worker with reconnect, UIDVALIDITY guard, `\Seen` / `\Flagged` flag handling, header-based threading.
 
 ## Phase 4 — AI layer
-- **ai-summaries** — Per-thread, Haiku 4.5, prompt-cached system block. Stored in `AISummary` on first request. Invalidated when the thread receives a new message.
-- **ai-reply-drafts** — Streaming, Sonnet 4.6. Prompt: thread history + small sample of the user's recent sent messages (tone matching) + optional tone/length controls. Drafts versioned.
-- **ai-prioritization** — Haiku 4.5 with tool-use schema `{ priority: 1–5, reason, suggestedActions[] }`. Runs on `message.new` via Inngest. Powers the "Priority Inbox" view.
+*Locked differentiators per `decisions.md` 2026-05-14: each feature ships with the specific shape below, not generic AI calls.*
+- **ai-summaries** — Per-thread, Haiku 4.5, prompt-cached system block. **Tool-use schema `{ tldr, ask?, decision?, deadline? }`** (decision-extracted, not narrative). "Show me the prompt" modal exposes the exact call + token usage. **Prompt-injection defense** (email body wrapped in `<email>` tags + system instruction to ignore embedded instructions; tested against a phishing fixture). Stored in `AISummary`; invalidated when the thread receives new mail.
+- **ai-reply-drafts** — Streaming, Sonnet 4.6. Tone-matched from a sample of the user's recent sent messages. **Single call returns 3 variants** via tool-use schema `{ terse, friendly, detailed }`; UI renders three tabs, user picks one and edits.
+- **ai-prioritization** — Haiku 4.5 with tool-use schema **`{ priority: 1-5, reason: string ≤6 words, suggestedActions: ("reply"|"archive"|"snooze"|"delegate")[], riskFlag: "phish"|"promo"|"ok" }`**. Runs on `message.new` via Inngest. The inbox UI renders **the reason as a chip on each row** (not the number) and **defaults to AI-priority sort order** (chronological is a toggle). `riskFlag !== "ok"` adds a trust badge.
 
 ## Phase 5 — PWA + deploy
 - **pwa-offline** — Serwist service worker, manifest, install prompt, offline shell, IndexedDB draft queue with replay on reconnect.

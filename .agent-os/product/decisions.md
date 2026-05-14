@@ -2,6 +2,34 @@
 
 Reverse-chronological log of significant choices. New entries on top. Each entry: context → decision → why.
 
+## 2026-05-14 — AI differentiator schemas locked for the three AI specs
+- **Context**: Many submissions to this evaluation will implement AI summaries / drafts / prioritization as a thin wrapper over `messages.create`. We need the AI features to be distinctive *without* expanding scope beyond the three required features.
+- **Decision**: Bake the following shapes into the future AI specs (planner agent will pick these up when writing each spec). All within the three required features — no new feature areas.
+
+  **`ai-summaries` spec will lock in:**
+  - Tool-use output schema `{ tldr: string, ask?: string, decision?: string, deadline?: string }` instead of narrative paragraph. UI renders the four fields distinctly so the "what does this person want?" is front-and-center for any thread >3 messages.
+  - "Show me the prompt" trust UI — clicking the summary opens a modal with the exact prompt, model, and `usage` token counts.
+  - Prompt-injection defense — email body wrapped in `<email>...</email>` tags with a system instruction to never follow instructions embedded inside; tested against a fixture containing "ignore previous instructions" inside an email body.
+
+  **`ai-reply-drafts` spec will lock in:**
+  - Single tool-use call returns 3 variants `{ terse: string, friendly: string, detailed: string }`. UI shows three tabs; user picks the closest and edits. One call, ~3× output tokens, no new code paths.
+
+  **`ai-prioritization` spec will lock in:**
+  - Tool-use output `{ priority: 1-5, reason: string (≤6 words), suggestedActions: ("reply"|"archive"|"snooze"|"delegate")[], riskFlag: "phish"|"promo"|"ok" }`.
+  - The UI renders the `reason` as a small badge chip on each inbox row (the differentiator — most demos show a number; ours shows the *why*). `riskFlag !== "ok"` adds a coloured trust badge.
+  - Inbox sort order defaults to AI priority (not received-at); a toggle in the header restores chronological.
+
+- **Why these specifically**: each is a one-line schema change at the prompt level and a small render change in the UI. Together they take the AI from "I called Claude" to "this AI helps me actually triage."
+- **Out of scope (explicit non-goals for AI specs)**: AI search, AI label suggestions, adaptive learning per user. The three required features only.
+
+## 2026-05-14 — Trim three planner-introduced extras from gmail-provider spec
+- **Context**: The planner agent's first draft of `gmail-provider` introduced (a) a 1 MB `bodyHtml` truncation with lazy-fetch fallback, (b) a `FullResyncRequiredError` subclass, and (c) an in-process `Map<accountId, Promise>` for refresh coalescing. None of these are in the assignment requirements or the established docs.
+- **Decision**: Cut all three.
+  - Body: store full HTML; SQLite handles MB-sized text.
+  - History expiry: map history-404 to `AuthError` with "reconnect required" message; UI surfaces a reconnect button (in the next spec).
+  - Refresh race: accepted as benign — Google's refresh endpoint is idempotent; two concurrent refreshes cost an extra HTTP round trip and produce equivalent secrets.
+- **Why**: per the user's "don't create extras" guidance during the spec review pass. Attachments and Inngest cron are kept because they're already woven into the established product/architecture docs.
+
 ## 2026-05-14 — Use npm instead of pnpm
 - **Context**: Original plan used pnpm. Corepack-activated pnpm on this Windows machine hit `EPERM` writing into `C:\Program Files\nodejs\`, which would have required an admin shell to set up.
 - **Decision**: Use plain npm. Lockfile is `package-lock.json`.

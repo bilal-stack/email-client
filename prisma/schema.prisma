@@ -1,5 +1,5 @@
-// Foundation schema. Adds Auth.js Prisma adapter models + our MailAccount extension.
-// Thread, Message, AISummary, AIDraft, PriorityScore land in their own specs.
+// Foundation schema + Gmail-provider mail cache tables (Thread / Message / Attachment).
+// AISummary, AIDraft, PriorityScore land in their own specs.
 
 datasource db {
   provider = "sqlite"
@@ -73,6 +73,72 @@ model MailAccount {
   syncCursor      String? // historyId | delta token | UIDVALIDITY+UID
   lastSyncedAt    DateTime?
   createdAt       DateTime  @default(now())
+  threads         Thread[]
+  messages        Message[]
 
   @@unique([userId, provider, emailAddress])
+}
+
+// ─── Mail cache tables (populated by provider adapters via Inngest sync) ──
+model Thread {
+  id               String      @id @default(cuid())
+  accountId        String
+  account          MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  // Native provider thread id (Gmail threadId, Graph conversationId, or IMAP-synthesized).
+  providerThreadId String
+  subject          String
+  lastMessageAt    DateTime
+  unreadCount      Int         @default(0)
+  labels           Json // string[] — provider label ids passed through
+  participants     Json // CanonicalAddress[]
+  messages         Message[]
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  @@unique([accountId, providerThreadId])
+  @@index([accountId, lastMessageAt(sort: Desc)])
+}
+
+model Message {
+  id                String       @id @default(cuid())
+  threadId          String
+  thread            Thread       @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  accountId         String
+  account           MailAccount  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  providerMessageId String // Gmail messageId
+  providerThreadId  String // denormalized for fast joins during sync writeback
+  from              Json // CanonicalAddress
+  to                Json // CanonicalAddress[]
+  cc                Json // CanonicalAddress[]
+  bcc               Json // CanonicalAddress[]
+  subject           String
+  snippet           String
+  bodyHtml          String? // full HTML body; null when only text part exists
+  bodyText          String?
+  receivedAt        DateTime
+  isUnread          Boolean      @default(false)
+  labels            Json // string[] — current provider label set
+  inReplyTo         String? // RFC 5322 Message-ID of parent, if any
+  references        Json // string[] — RFC 5322 References chain
+  attachments       Attachment[]
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  @@unique([accountId, providerMessageId])
+  @@index([accountId, receivedAt(sort: Desc)])
+  @@index([threadId, receivedAt(sort: Asc)])
+}
+
+model Attachment {
+  id                   String    @id @default(cuid())
+  messageId            String
+  message              Message   @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  providerAttachmentId String // Gmail's attachmentId — fetch token, not a stable global id
+  filename             String
+  mimeType             String
+  size                 Int
+  // null until the user opens / downloads the attachment. Future spec lazy-fetches the bytes.
+  fetchedAt            DateTime?
+
+  @@index([messageId])
 }

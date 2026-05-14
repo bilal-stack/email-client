@@ -1,0 +1,9 @@
+{
+  "history": [
+    {
+      "id": "12360",
+      "messagesDeleted": [{ "message": { "id": "m-deleted-1", "threadId": "t-deleted-1" } }]
+    }
+  ],
+  "historyId": "12360"
+}

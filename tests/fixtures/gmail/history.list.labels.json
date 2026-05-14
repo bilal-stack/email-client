@@ -1,0 +1,27 @@
+{
+  "history": [
+    {
+      "id": "12370",
+      "labelsAdded": [
+        {
+          "message": {
+            "id": "m-label-1",
+            "threadId": "t-label-1",
+            "labelIds": ["INBOX", "UNREAD"]
+          },
+          "labelIds": ["UNREAD"]
+        }
+      ]
+    },
+    {
+      "id": "12371",
+      "labelsRemoved": [
+        {
+          "message": { "id": "m-label-2", "threadId": "t-label-2", "labelIds": ["INBOX"] },
+          "labelIds": ["UNREAD"]
+        }
+      ]
+    }
+  ],
+  "historyId": "12371"
+}

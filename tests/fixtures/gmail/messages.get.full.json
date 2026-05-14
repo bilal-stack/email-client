@@ -1,0 +1,20 @@
+{
+  "id": "m-new-1",
+  "threadId": "t-new-1",
+  "labelIds": ["INBOX", "UNREAD"],
+  "snippet": "A newly arrived message",
+  "internalDate": "1700001000000",
+  "payload": {
+    "mimeType": "text/plain",
+    "headers": [
+      { "name": "From", "value": "Eve Sender <eve@example.com>" },
+      { "name": "To", "value": "you@example.com" },
+      { "name": "Subject", "value": "Newly arrived" },
+      { "name": "Message-Id", "value": "<m-new-1@example.com>" }
+    ],
+    "body": {
+      "size": 16,
+      "data": "SGVsbG8gcGxhaW4gdGV4dA"
+    }
+  }
+}

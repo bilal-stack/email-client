@@ -1,0 +1,12 @@
+{
+  "history": [
+    {
+      "id": "20000",
+      "messagesAdded": [
+        { "message": { "id": "m-pg1-a", "threadId": "t-pg1-a", "labelIds": ["INBOX"] } }
+      ]
+    }
+  ],
+  "nextPageToken": "HIST_PAGE2_TOKEN",
+  "historyId": "20000"
+}
