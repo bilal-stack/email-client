@@ -25,6 +25,10 @@ export async function listThreadsForUser(
   const accountIds = accounts.map((a) => a.id);
   const accountEmailById = new Map(accounts.map((a) => [a.id, a.emailAddress]));
 
+  // Only the latest message is needed to populate the row (snippet + from);
+  // unread count is a SQL aggregation, not a JS filter over every row. This
+  // replaces a pathological `include: { messages: true }` that previously
+  // shipped every message body across the wire just to count unread.
   const threads = await prisma.thread.findMany({
     where: { accountId: { in: accountIds } },
     orderBy: { lastMessageAt: "desc" },
@@ -32,9 +36,11 @@ export async function listThreadsForUser(
     ...(opts.cursor ? { skip: 1, cursor: { id: opts.cursor } } : {}),
     include: {
       messages: {
-        select: { id: true, snippet: true, from: true, receivedAt: true, isUnread: true },
+        take: 1,
         orderBy: { receivedAt: "desc" },
+        select: { id: true, snippet: true, from: true, receivedAt: true },
       },
+      _count: { select: { messages: { where: { isUnread: true } } } },
     },
   });
 
@@ -43,7 +49,6 @@ export async function listThreadsForUser(
 
   const rows: ThreadRow[] = slice.map((t) => {
     const latest = t.messages[0];
-    const unread = t.messages.filter((m) => m.isUnread).length;
     const fromJson = (latest?.from ?? null) as unknown as { name?: string; email?: string } | null;
     return {
       id: t.id,
@@ -53,7 +58,7 @@ export async function listThreadsForUser(
       snippet: latest?.snippet ?? "",
       fromName: fromJson?.name ?? fromJson?.email ?? "",
       participantCount: Array.isArray(t.participants) ? (t.participants as unknown[]).length : 0,
-      unreadCount: unread,
+      unreadCount: t._count.messages,
       lastMessageAt: t.lastMessageAt,
     };
   });

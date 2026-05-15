@@ -40,7 +40,18 @@ export interface CanonicalMessage {
 export interface CanonicalThread {
   id: ThreadId;
   accountId: string;
+  /**
+   * The thread subject. May be empty if obtained via a list-only call where
+   * the provider didn't return a subject (Gmail `threads.list` is the canonical
+   * example — it returns id + snippet + historyId only). UI code should prefer
+   * `subject` when present and fall back to `snippet` otherwise.
+   */
   subject: string;
+  /**
+   * Short preview of the latest message in the thread. Always populated when
+   * the provider supplies one; useful as a subject fallback in list views.
+   */
+  snippet: string;
   participants: CanonicalAddress[];
   lastMessageAt: Date;
   unreadCount: number;

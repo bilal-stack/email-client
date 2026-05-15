@@ -1,5 +1,6 @@
 // @vitest-environment node
-// `isomorphic-dompurify` pulls in jsdom which expects a Node environment.
+// Uses Node-only APIs (`fs/promises`) to load test fixtures; sanitize-html
+// itself is environment-agnostic.
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";

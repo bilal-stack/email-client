@@ -1,8 +1,14 @@
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { auth } from "@/lib/auth";
 import Link from "next/link";
+import { redirect } from "next/navigation";
 
-export default function LandingPage() {
+export default async function LandingPage() {
+  // Signed-in users skip the marketing landing and go straight to their inbox.
+  const session = await auth();
+  if (session?.user) redirect("/inbox");
+
   return (
     <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-12 px-6 py-12 sm:py-20">
       <header className="space-y-3">

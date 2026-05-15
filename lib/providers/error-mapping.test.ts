@@ -34,12 +34,13 @@ function gaxiosLike(status: number, message: string, extras: Partial<FakeGaxiosE
 }
 
 describe("mapError", () => {
-  it("maps 401 to AuthError and preserves cause", () => {
+  it("maps 401 to AuthError and surfaces a debuggable cause", () => {
     const raw = gaxiosLike(401, "Invalid Credentials");
     const mapped = mapError(raw);
     expect(mapped).toBeInstanceOf(AuthError);
     expect(mapped.message).toBe("Invalid Credentials");
-    expect(mapped.cause).toBe(raw);
+    // Cause is sanitized (no circular gaxios refs) but carries the key fields.
+    expect(mapped.cause).toMatchObject({ status: 401, message: "Invalid Credentials" });
   });
 
   it("maps 403 with insufficientPermissions message to AuthError", () => {
@@ -89,7 +90,7 @@ describe("mapError", () => {
     const raw = new Error("ECONNRESET");
     const mapped = mapError(raw);
     expect(mapped).toBeInstanceOf(TransientError);
-    expect(mapped.cause).toBe(raw);
+    expect(mapped.cause).toMatchObject({ message: "ECONNRESET" });
   });
 
   it("maps an invalid_grant body string to AuthError (via 403 path)", () => {
@@ -109,7 +110,7 @@ describe("mapError", () => {
     expect(mapped).toBe(original);
   });
 
-  it("preserves the original on .cause for every mapped variant", () => {
+  it("attaches a serializable .cause for every mapped variant", () => {
     const cases: Array<[FakeGaxiosError | Error, abstract new (...a: never[]) => ProviderError]> = [
       [gaxiosLike(401, "x"), AuthError],
       [gaxiosLike(404, "x"), NotFoundError],
@@ -121,7 +122,25 @@ describe("mapError", () => {
     for (const [raw, Ctor] of cases) {
       const mapped = mapError(raw);
       expect(mapped).toBeInstanceOf(Ctor);
-      expect(mapped.cause).toBe(raw);
+      // Cause is sanitized (no circular gaxios refs) but JSON-serializable.
+      expect(mapped.cause).not.toBe(raw);
+      expect(() => JSON.stringify(mapped.cause)).not.toThrow();
     }
+  });
+
+  it("strips circular gaxios refs so the cause is JSON-serializable", () => {
+    // Build a circular structure that mirrors how googleapis surfaces errors
+    // (config <-> response <-> request). Verifies the Inngest step-output
+    // serialization path (which JSON.stringify's thrown errors) won't choke.
+    const circular: Record<string, unknown> = { name: "GaxiosError", message: "boom", code: 500 };
+    const response: Record<string, unknown> = { status: 500, data: { error: { message: "boom" } } };
+    circular.response = response;
+    response.config = circular;
+    response.request = circular;
+    (circular as { config?: unknown }).config = circular;
+
+    const mapped = mapError(circular);
+    expect(mapped).toBeInstanceOf(TransientError);
+    expect(() => JSON.stringify(mapped.cause)).not.toThrow();
   });
 });

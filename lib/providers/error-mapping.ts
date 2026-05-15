@@ -67,6 +67,30 @@ function pickRetryAfter(err: GaxiosLikeError): number | undefined {
   return Number.isFinite(n) ? n : undefined;
 }
 
+/**
+ * Flatten a gaxios / fetch error into a safely-serializable object before we
+ * attach it as `.cause`. Raw gaxios errors carry circular references between
+ * `config` ↔ `response` ↔ `request`; when Inngest serializes a step's thrown
+ * error for the run log it `JSON.stringify`s the cause chain, and the circular
+ * refs surface as a `SyntaxError: Unexpected end of JSON input` in the Next.js
+ * terminal. Keeping only the fields we'd actually inspect during debugging
+ * (status, code, message, response data) sidesteps that without losing signal.
+ */
+function sanitizeCause(e: unknown): unknown {
+  if (e === null || e === undefined) return e;
+  if (typeof e !== "object") return e;
+  const src = e as GaxiosLikeError & { name?: string; stack?: string };
+  return {
+    name: src.name,
+    message: src.message,
+    code: src.code,
+    status: pickStatus(src),
+    responseData: src.response?.data,
+    // Keep stack as a string — already serializable.
+    stack: src.stack,
+  };
+}
+
 export function mapError(e: unknown): ProviderError {
   // Idempotent — if we've already mapped this once, return as-is.
   if (e instanceof ProviderError) return e;
@@ -74,11 +98,12 @@ export function mapError(e: unknown): ProviderError {
   const err = (e ?? {}) as GaxiosLikeError;
   const status = pickStatus(err);
   const message = pickMessage(err);
+  const cause = sanitizeCause(e);
 
-  if (status === 401) return new AuthError(message, { cause: e });
+  if (status === 401) return new AuthError(message, { cause });
 
   if (status === 403 && /insufficientPermissions|invalid_grant/i.test(message)) {
-    return new AuthError(message, { cause: e });
+    return new AuthError(message, { cause });
   }
 
   if (status === 404) {
@@ -89,25 +114,23 @@ export function mapError(e: unknown): ProviderError {
     // sync). We deliberately do NOT introduce a `FullResyncRequiredError`
     // subclass — automatic full re-sync is out of scope for this spec.
     if (/historyId.*not found|startHistoryId|Invalid.*startHistoryId/i.test(message)) {
-      return new AuthError(`Sync history expired — reconnect required: ${message}`, {
-        cause: e,
-      });
+      return new AuthError(`Sync history expired — reconnect required: ${message}`, { cause });
     }
-    return new NotFoundError(message, { cause: e });
+    return new NotFoundError(message, { cause });
   }
 
   if (status === 429) {
-    return new RateLimitError(message, pickRetryAfter(err), { cause: e });
+    return new RateLimitError(message, pickRetryAfter(err), { cause });
   }
 
   if (typeof status === "number" && status >= 500 && status < 600) {
-    return new TransientError(message, { cause: e });
+    return new TransientError(message, { cause });
   }
 
   if (status === undefined) {
     // Network / DNS / abort / non-HTTP failure. Retry is safe.
-    return new TransientError(message, { cause: e });
+    return new TransientError(message, { cause });
   }
 
-  return new UnknownProviderError(message, { cause: e });
+  return new UnknownProviderError(message, { cause });
 }

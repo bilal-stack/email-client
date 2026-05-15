@@ -1,4 +1,5 @@
 import type { Metadata, Viewport } from "next";
+import NextTopLoader from "nextjs-toploader";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -15,7 +16,16 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en">
-      <body className="min-h-screen bg-zinc-50 text-zinc-900">{children}</body>
+      <body className="min-h-screen bg-zinc-50 text-zinc-900">
+        {/* Global top progress bar for every Link navigation + router.push. */}
+        <NextTopLoader
+          color="#18181b"
+          height={2}
+          showSpinner={false}
+          shadow="0 0 6px rgba(24,24,27,0.4)"
+        />
+        {children}
+      </body>
     </html>
   );
 }

@@ -128,7 +128,7 @@ export class NotImplementedProvider implements IEmailProvider {
   import { inngest } from "@/lib/inngest/client";
   export const { GET, POST, PUT } = serve({ client: inngest, functions: [] });
   ```
-- Dev script: `inngest:dev` runs `pnpm dlx inngest-cli dev -u http://localhost:3000/api/inngest`.
+- Dev script: `inngest:dev` runs `npx inngest-cli@latest dev -u http://localhost:3000/api/inngest`.
 
 ## Middleware (`middleware.ts`)
 ```ts

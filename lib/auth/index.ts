@@ -1,6 +1,10 @@
 import { authConfig } from "@/auth.config";
-import { encrypt } from "@/lib/auth/crypto";
+import { handleSignIn } from "@/lib/auth/signin-callback";
 import { prisma } from "@/lib/db";
+// Importing `env` triggers boot-time validation. Any invalid env var throws
+// here before NextAuth() runs, so misconfigured envs surface immediately at
+// `npm run dev` start instead of on the user's first sign-in attempt.
+import { env } from "@/lib/env";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
@@ -28,14 +32,22 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
   adapter: PrismaAdapter(prisma),
   providers: [
+    // Explicitly pass clientId/clientSecret instead of relying on Auth.js v5's
+    // env-var auto-detection (which expects AUTH_GOOGLE_ID/AUTH_GOOGLE_SECRET,
+    // not GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET). Keeps `.env` naming
+    // consistent across the project + matches what most tutorials show.
     Google({
+      clientId: env.GOOGLE_CLIENT_ID,
+      clientSecret: env.GOOGLE_CLIENT_SECRET,
       authorization: {
         params: { scope: GOOGLE_SCOPES, access_type: "offline", prompt: "consent" },
       },
     }),
     MicrosoftEntraID({
+      clientId: env.AZURE_AD_CLIENT_ID,
+      clientSecret: env.AZURE_AD_CLIENT_SECRET,
       authorization: { params: { scope: MICROSOFT_SCOPES } },
-      issuer: `https://login.microsoftonline.com/${process.env.AZURE_AD_TENANT_ID ?? "common"}/v2.0`,
+      issuer: `https://login.microsoftonline.com/${env.AZURE_AD_TENANT_ID}/v2.0`,
     }),
     // IMAP credentials provider is fleshed out in spec `imap-provider`.
     Credentials({
@@ -52,53 +64,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   ],
   callbacks: {
     ...authConfig.callbacks,
-    async signIn({ account, profile }) {
-      if (!account || account.type !== "oauth") return true;
-      const providerName = mapProvider(account.provider);
-      if (!providerName) return true;
-
-      const emailAddress = typeof profile?.email === "string" ? profile.email : null;
-      if (!emailAddress) return false;
-
-      const secretJson = JSON.stringify({
-        accessToken: account.access_token ?? null,
-        refreshToken: account.refresh_token ?? null,
-        expiresAt: account.expires_at ?? null,
-        scope: account.scope ?? null,
-        tokenType: account.token_type ?? null,
-        idToken: account.id_token ?? null,
-      });
-      const sealed = encrypt(secretJson);
-
-      const dbUser = await prisma.user.findUnique({ where: { email: emailAddress } });
-      if (!dbUser) return true;
-
-      await prisma.mailAccount.upsert({
-        where: {
-          userId_provider_emailAddress: {
-            userId: dbUser.id,
-            provider: providerName,
-            emailAddress,
-          },
-        },
-        create: {
-          userId: dbUser.id,
-          provider: providerName,
-          emailAddress,
-          displayName: typeof profile?.name === "string" ? profile.name : null,
-          encryptedSecret: sealed.ciphertext,
-          secretIv: sealed.iv,
-          secretTag: sealed.tag,
-        },
-        update: {
-          encryptedSecret: sealed.ciphertext,
-          secretIv: sealed.iv,
-          secretTag: sealed.tag,
-          displayName: typeof profile?.name === "string" ? profile.name : undefined,
-        },
-      });
-      return true;
-    },
+    signIn: handleSignIn,
     async jwt({ token, user }) {
       if (user?.id) token.userId = user.id;
       return token;
@@ -111,9 +77,3 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     },
   },
 });
-
-function mapProvider(authProvider: string): "gmail" | "graph" | null {
-  if (authProvider === "google") return "gmail";
-  if (authProvider === "microsoft-entra-id") return "graph";
-  return null;
-}

@@ -1,6 +1,6 @@
 import { InboxQueryProvider } from "@/app/inbox/_components/query-provider";
 import { Avatar } from "@/components/ui/avatar";
-import { Button } from "@/components/ui/button";
+import { SubmitButton } from "@/components/ui/submit-button";
 import { auth, signOut } from "@/lib/auth";
 import { prisma } from "@/lib/db";
 import Link from "next/link";
@@ -34,9 +34,9 @@ export default async function MailLayout({ children }: { children: React.ReactNo
               fallback={session?.user?.name ?? session?.user?.email ?? "U"}
             />
             <form action={doSignOut}>
-              <Button type="submit" variant="ghost" size="sm">
+              <SubmitButton variant="ghost" size="sm" pendingLabel="Signing out…">
                 Sign out
-              </Button>
+              </SubmitButton>
             </form>
           </div>
         </header>

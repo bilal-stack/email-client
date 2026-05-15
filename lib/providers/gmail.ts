@@ -251,6 +251,7 @@ function normalizeThread(thread: gmail_v1.Schema$Thread, accountId: string): Can
     id: thread.id ?? "",
     accountId,
     subject: messages[0]?.subject ?? "",
+    snippet: lastMessage?.snippet ?? messages[0]?.snippet ?? "",
     participants: [...participantsMap.values()],
     lastMessageAt: lastMessage?.receivedAt ?? new Date(0),
     unreadCount,
@@ -263,11 +264,8 @@ function normalizeThread(thread: gmail_v1.Schema$Thread, accountId: string): Can
  * Light-weight CanonicalThread shape for `threads.list` results, which only
  * return `(id, snippet, historyId)` — no payloads. We populate just enough
  * fields to satisfy `ListResult<CanonicalThread>`; the UI calls `getThread`
- * for the full picture. The `snippet` from the list response is captured on
- * `subject` as a best-effort preview until `getThread` populates the real one.
- *
- * TODO(unified-inbox-ui spec): consider adding a `snippet` field to
- * `CanonicalThread` so list rendering doesn't conflate snippet with subject.
+ * for the full picture. `subject` is left empty (we don't have it from the
+ * list call); UI renders snippet when subject is empty.
  */
 function normalizeThreadSummary(
   thread: gmail_v1.Schema$Thread,
@@ -276,7 +274,8 @@ function normalizeThreadSummary(
   return {
     id: thread.id ?? "",
     accountId,
-    subject: thread.snippet ?? "",
+    subject: "",
+    snippet: thread.snippet ?? "",
     participants: [],
     lastMessageAt: new Date(0),
     unreadCount: 0,

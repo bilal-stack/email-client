@@ -6,7 +6,7 @@ Stand up the project skeleton so all subsequent specs have a working scaffold. N
 **No email features yet** — this spec is purely infrastructure. The first adapter lands in `gmail-provider`.
 
 ## User stories
-1. **As a developer**, I can run `pnpm install && pnpm db:migrate && pnpm dev` from a fresh checkout and reach a styled landing page at `localhost:3000`.
+1. **As a developer**, I can run `npm install && npm run db:migrate && npm run dev` from a fresh checkout and reach a styled landing page at `localhost:3000`.
 2. **As a developer**, I can sign in with Google or Microsoft and land on `/inbox`, which shows an "no accounts connected yet" placeholder — proving Auth.js + Prisma + session middleware work end-to-end.
 3. **As a developer running an agent**, `provider-adapter` can be spawned and finds `lib/providers/types.ts` populated with the `IEmailProvider` interface and a `NotImplementedProvider` stub to extend.
 

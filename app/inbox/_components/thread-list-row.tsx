@@ -62,9 +62,15 @@ export function ThreadListRow({
             isUnread && "font-medium",
           )}
         >
-          {row.subject || "(no subject)"}
+          {/* Some provider list calls (Gmail's threads.list) don't return a
+              real subject — only a snippet preview. Fall back to that so the
+              row isn't a useless "(no subject)" until getThread populates the
+              real subject on click. */}
+          {row.subject || row.snippet || "(no subject)"}
         </p>
-        <p className="truncate text-xs text-zinc-500">{row.snippet}</p>
+        {row.subject && row.snippet ? (
+          <p className="truncate text-xs text-zinc-500">{row.snippet}</p>
+        ) : null}
       </div>
       {isUnread ? (
         <span
