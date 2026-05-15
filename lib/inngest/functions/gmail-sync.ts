@@ -16,11 +16,13 @@ import { prisma } from "@/lib/db";
 import { inngest } from "@/lib/inngest/client";
 import { GmailProvider } from "@/lib/providers/gmail";
 import type { CanonicalAddress, CanonicalMessage } from "@/lib/providers/types";
+import { emitInboxSyncEvent } from "@/lib/realtime/inbox-events";
 import type { Prisma } from "@prisma/client";
 
 interface GmailAccountRow {
   id: string;
   syncCursor: string | null;
+  userId: string;
 }
 
 interface ThreadAggregate {
@@ -90,7 +92,7 @@ export const gmailSyncDelta = inngest.createFunction(
     const accounts = (await step.run("list-accounts", () =>
       prisma.mailAccount.findMany({
         where: { provider: "gmail" },
-        select: { id: true, syncCursor: true },
+        select: { id: true, syncCursor: true, userId: true },
       }),
     )) as GmailAccountRow[];
 
@@ -99,10 +101,13 @@ export const gmailSyncDelta = inngest.createFunction(
         const provider = new GmailProvider(account.id);
         const delta = await provider.syncDelta(account.syncCursor);
 
+        // Declared outside the transaction callback so we can read the
+        // touched thread DB ids after the commit succeeds (for the SSE emit).
+        const providerThreadIdToDbId = new Map<string, string>();
+
         await prisma.$transaction(async (tx) => {
           // ── 1. Upsert threads referenced by new messages ─────────────
           const threadAggregates = aggregateThreads(delta.newMessages);
-          const providerThreadIdToDbId = new Map<string, string>();
 
           for (const agg of threadAggregates.values()) {
             const row = await tx.thread.upsert({
@@ -269,6 +274,24 @@ export const gmailSyncDelta = inngest.createFunction(
             },
           });
         });
+
+        try {
+          const touched = [...providerThreadIdToDbId.values()];
+          if (
+            touched.length > 0 ||
+            delta.deletedIds.length > 0 ||
+            delta.changedMessages.length > 0
+          ) {
+            emitInboxSyncEvent(account.userId, {
+              accountId: account.id,
+              threadIds: touched,
+              at: Date.now(),
+            });
+          }
+        } catch (e) {
+          // Best-effort: the DB commit already succeeded; SSE fan-out is opportunistic.
+          console.warn("inbox-events emit failed", e);
+        }
       });
     }
   },

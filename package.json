@@ -33,6 +33,8 @@
     "clsx": "^2.1.1",
     "googleapis": "^144.0.0",
     "inngest": "^3.27.0",
+    "isomorphic-dompurify": "^3.13.0",
+    "linkedom": "^0.18.12",
     "lucide-react": "^0.468.0",
     "next": "^15.1.0",
     "next-auth": "5.0.0-beta.25",
