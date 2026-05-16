@@ -20,6 +20,7 @@ model User {
   accounts      Account[]
   sessions      Session[]
   mailAccounts  MailAccount[]
+  drafts        Draft[]
   createdAt     DateTime      @default(now())
 }
 
@@ -75,6 +76,7 @@ model MailAccount {
   createdAt       DateTime  @default(now())
   threads         Thread[]
   messages        Message[]
+  drafts          Draft[]
 
   @@unique([userId, provider, emailAddress])
 }
@@ -92,6 +94,7 @@ model Thread {
   labels           Json // string[] — provider label ids passed through
   participants     Json // CanonicalAddress[]
   messages         Message[]
+  drafts           Draft[]
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
 
@@ -141,4 +144,45 @@ model Attachment {
   fetchedAt            DateTime?
 
   @@index([messageId])
+}
+
+// Persistent autosave slot for the composer. Source of truth lives on the
+// server so a draft is resumable from any browser on any device.
+//   - "new" compose (threadId = null) per user
+//   - reply / reply-all / forward per (user, thread)
+// SQLite treats NULL as distinct in a UNIQUE index, so the application layer
+// (upsertDraftForUser) handles the threadId=null singleton via an explicit
+// findFirst-then-upsert path. Cross-tab races resolve last-write-wins, which
+// is documented in spec.md non-goals.
+model Draft {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  accountId  String
+  account    MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  threadId   String?
+  thread     Thread?  @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  // "new" | "reply" | "reply-all" | "forward" — validated at the Zod layer.
+  mode       String
+
+  // Recipients as JSON arrays of CanonicalAddress shape `{ name?, email }`.
+  to         Json
+  cc         Json
+  bcc        Json
+
+  subject    String
+  bodyHtml   String
+
+  // Reply-only — RFC 5322 header chain. JSON-string arrays.
+  inReplyTo  Json
+  references Json
+
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([userId, threadId, mode])
+  @@index([userId, updatedAt(sort: Desc)])
 }

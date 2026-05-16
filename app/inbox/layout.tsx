@@ -1,3 +1,4 @@
+import { ComposeButton } from "@/app/inbox/_components/compose-button";
 import { InboxQueryProvider } from "@/app/inbox/_components/query-provider";
 import { Avatar } from "@/components/ui/avatar";
 import { SubmitButton } from "@/components/ui/submit-button";
@@ -28,6 +29,7 @@ export default async function MailLayout({ children }: { children: React.ReactNo
             Universal Mail
           </Link>
           <div className="flex items-center gap-3">
+            <ComposeButton />
             <Avatar
               src={session?.user?.image}
               alt={session?.user?.name ?? "Account"}
