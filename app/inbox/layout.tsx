@@ -1,5 +1,6 @@
 import { ComposeButton } from "@/app/inbox/_components/compose-button";
 import { InboxQueryProvider } from "@/app/inbox/_components/query-provider";
+import { SearchInput } from "@/app/inbox/_components/search-input";
 import { Avatar } from "@/components/ui/avatar";
 import { SubmitButton } from "@/components/ui/submit-button";
 import { auth, signOut } from "@/lib/auth";
@@ -24,10 +25,13 @@ export default async function MailLayout({ children }: { children: React.ReactNo
   return (
     <InboxQueryProvider>
       <div className="flex min-h-screen flex-col">
-        <header className="flex items-center justify-between border-b border-zinc-200 bg-white px-4 py-3">
-          <Link href="/inbox" className="text-sm font-semibold tracking-tight">
+        <header className="flex items-center gap-4 border-b border-zinc-200 bg-white px-4 py-3">
+          <Link href="/inbox" className="shrink-0 text-sm font-semibold tracking-tight">
             Universal Mail
           </Link>
+          <div className="hidden flex-1 sm:block">
+            <SearchInput />
+          </div>
           <div className="flex items-center gap-3">
             <ComposeButton />
             <Avatar

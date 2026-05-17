@@ -4,6 +4,11 @@ Items surfaced during testing or audit that we deliberately deferred. Address af
 
 ---
 
+## Inbox-actions UX (security-reviewer nits from search-labels-archive-delete)
+
+- **Bulk label-remove via the popover doesn't work.**
+  `app/inbox/_components/bulk-action-bar.tsx` mounts `<LabelsPopover />` without passing `currentLabels`. The popover diffs against `currentLabels ?? []`, so the resulting `setThreadLabels` call only ever populates `add` — users can bulk-add a label but cannot bulk-remove one via this UI. Fix: pass the union of labels across the selected threads (compute in the selection store by tracking per-thread labels, or load lazily when the popover opens).
+
 ## Compose hardening (security-reviewer nits from compose-reply-forward)
 
 - **Client-side attachment guard doesn't mirror `MIME_DENY`.**

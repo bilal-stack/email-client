@@ -1,4 +1,5 @@
 import { MessageCard } from "@/app/inbox/[threadId]/_components/message-card";
+import { ThreadActions } from "@/app/inbox/[threadId]/_components/thread-actions";
 import type { ThreadDTO, ThreadMessageDTO } from "@/app/inbox/_lib/dto";
 import { Button } from "@/components/ui/button";
 import Link from "next/link";
@@ -51,6 +52,7 @@ export function ThreadView({ thread, messages }: ThreadViewProps) {
           <Button asChild size="sm" variant="outline">
             <Link href={`/inbox/${thread.id}/forward`}>Forward</Link>
           </Button>
+          <ThreadActions threadId={thread.id} />
         </div>
       </header>
       <div className="flex-1 overflow-y-auto">

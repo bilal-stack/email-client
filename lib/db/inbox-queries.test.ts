@@ -34,7 +34,13 @@ async function createUserWithAccount(): Promise<{ userId: string; accountId: str
 
 async function createThread(
   accountId: string,
-  opts: { subject: string; lastMessageAt: Date; unread?: number; messageCount?: number },
+  opts: {
+    subject: string;
+    lastMessageAt: Date;
+    unread?: number;
+    messageCount?: number;
+    labels?: string[];
+  },
 ): Promise<string> {
   const thread = await prisma.thread.create({
     data: {
@@ -43,7 +49,7 @@ async function createThread(
       subject: opts.subject,
       lastMessageAt: opts.lastMessageAt,
       unreadCount: opts.unread ?? 0,
-      labels: ["INBOX"],
+      labels: opts.labels ?? ["INBOX"],
       participants: [{ name: "Sender", email: "sender@example.com" }],
     },
   });
@@ -166,6 +172,40 @@ describe("listThreadsForUser", () => {
     const result = await listThreadsForUser(user.id, {});
     expect(result.threads).toEqual([]);
     expect(result.nextCursor).toBeNull();
+  });
+
+  it("excludes threads whose labels do not contain INBOX", async () => {
+    const { userId, accountId } = await createUserWithAccount();
+    const inboxThread = await createThread(accountId, {
+      subject: "InInbox",
+      lastMessageAt: new Date("2026-05-12T10:00:00Z"),
+      labels: ["INBOX"],
+    });
+    await createThread(accountId, {
+      subject: "StarredOnly",
+      lastMessageAt: new Date("2026-05-12T11:00:00Z"),
+      labels: ["STARRED"],
+    });
+
+    const result = await listThreadsForUser(userId, {});
+    expect(result.threads.map((t) => t.id)).toEqual([inboxThread]);
+  });
+
+  it("excludes threads with both INBOX and TRASH (treated as trashed)", async () => {
+    const { userId, accountId } = await createUserWithAccount();
+    const inboxThread = await createThread(accountId, {
+      subject: "Active",
+      lastMessageAt: new Date("2026-05-12T10:00:00Z"),
+      labels: ["INBOX"],
+    });
+    await createThread(accountId, {
+      subject: "Trashed",
+      lastMessageAt: new Date("2026-05-12T11:00:00Z"),
+      labels: ["INBOX", "TRASH"],
+    });
+
+    const result = await listThreadsForUser(userId, {});
+    expect(result.threads.map((t) => t.id)).toEqual([inboxThread]);
   });
 });
 

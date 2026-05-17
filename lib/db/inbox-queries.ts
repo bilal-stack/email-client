@@ -44,8 +44,24 @@ export async function listThreadsForUser(
     },
   });
 
-  const nextCursor = threads.length > limit ? (threads[limit - 1]?.id ?? null) : null;
-  const slice = threads.slice(0, limit);
+  // Filter to threads currently in the inbox: must have INBOX label AND must
+  // not have TRASH. SQLite + Prisma doesn't expose a clean JSON-array contains
+  // predicate, so we filter in JS — fine for the page-sized result set; the
+  // `deploy-vercel` migration to Postgres can switch to `WHERE labels @>` if
+  // perf demands.
+  const inInbox = threads.filter((t) => {
+    const labels = Array.isArray(t.labels) ? (t.labels as unknown[]) : [];
+    let hasInbox = false;
+    let hasTrash = false;
+    for (const l of labels) {
+      if (l === "INBOX") hasInbox = true;
+      else if (l === "TRASH") hasTrash = true;
+    }
+    return hasInbox && !hasTrash;
+  });
+
+  const nextCursor = inInbox.length > limit ? (inInbox[limit - 1]?.id ?? null) : null;
+  const slice = inInbox.slice(0, limit);
 
   const rows: ThreadRow[] = slice.map((t) => {
     const latest = t.messages[0];

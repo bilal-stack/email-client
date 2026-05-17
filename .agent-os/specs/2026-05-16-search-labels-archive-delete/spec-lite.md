@@ -1,0 +1,3 @@
+# Search, Labels, Archive, Delete (lite)
+
+Adds the inbox CRUD surface: search input in the layout header navigating to `/inbox/search?q=...`, per-row Archive / Trash icon buttons, a Labels popover, bulk-select checkboxes + Archive / Trash / Labels toolbar, keyboard shortcuts (`j`/`k` to move focus, `e` to archive, `#` to trash, `x` to select, `/` to focus search, `Esc` to clear). All mutations call `IEmailProvider.{search|archive|trash|setLabels}` via `getProviderForAccount` — provider-agnostic. Inbox view filters to threads with the `INBOX` label so archived/trashed threads disappear. Local DB rows are mutated optimistically and reverted on provider throw; next 60s Inngest sync reconciles. No AI search, no label CRUD UI, no snooze/star/mute, no undo toast.
