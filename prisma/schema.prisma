@@ -1,5 +1,5 @@
 // Foundation schema + Gmail-provider mail cache tables (Thread / Message / Attachment).
-// AISummary, AIDraft, PriorityScore land in their own specs.
+// AISummary lands in ai-summaries spec. AIDraft, PriorityScore land in their own specs.
 
 datasource db {
   provider = "sqlite"
@@ -95,6 +95,7 @@ model Thread {
   participants     Json // CanonicalAddress[]
   messages         Message[]
   drafts           Draft[]
+  aiSummary        AISummary?
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
 
@@ -185,4 +186,52 @@ model Draft {
 
   @@unique([userId, threadId, mode])
   @@index([userId, updatedAt(sort: Desc)])
+}
+
+// ─── AI summary per thread (Phase 4 ai-summaries spec) ────────────────────
+// One summary per Thread (`@unique` on `threadId`). Lazy-generated on first
+// thread open; the `writeDelta` invalidation hook flips `invalidatedAt` to
+// non-null when a new message lands, and the next `summarizeThread` call
+// regenerates via upsert. Ownership flows through `Thread.account.userId`.
+model AISummary {
+  id              String   @id @default(cuid())
+
+  threadId        String   @unique
+  thread          Thread   @relation(fields: [threadId], references: [id], onDelete: Cascade)
+
+  /// Always populated — the one required field in the locked schema.
+  tldr            String
+
+  /// All three optional fields are nullable strings. The model omits them when
+  /// the thread doesn't supply enough signal; the UI renders chips only for
+  /// non-null fields.
+  ask             String?
+  decision        String?
+  deadline        String?
+
+  /// Model identifier at generation time (e.g. "claude-haiku-4-5-20251001").
+  model           String
+
+  /// Key into `lib/ai/prompts/summary-registry.ts`. Registry retains every
+  /// historical prompt version indefinitely.
+  promptVersion   String
+
+  /// Raw Anthropic `usage` block — input_tokens, output_tokens, and the two
+  /// cache fields. JSON keeps the column tolerant to shape evolution.
+  usage           Json
+
+  /// The serialized user payload sent to the model — subject, participants,
+  /// last-N messages (bodies wrapped in <email> tags, truncated to 2 KB).
+  /// Shown verbatim in the trust modal.
+  userMessageJson String
+
+  generatedAt     DateTime  @default(now())
+
+  /// Set by the `writeDelta` invalidation hook on a new-message delta. The
+  /// next `summarizeThread` call sees this non-null and regenerates, then
+  /// resets to null in the upsert.
+  invalidatedAt   DateTime?
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 }

@@ -218,6 +218,20 @@ export async function writeDelta(params: {
     await tx.attachment.createMany({ data: attachmentRows });
   }
 
+  // ── 3.5. Invalidate AISummary rows on threads that got new mail ──
+  // Only new-message-touching deltas invalidate. `changedMessages` (label
+  // flips, unread toggles) and `deletedIds` don't change what the summary
+  // says, so they leave the row alone. `providerThreadIdToDbId` is
+  // populated only by step 1 (which keys off `delta.newMessages`), so its
+  // values are exactly the right set.
+  const touchedThreadDbIds = [...providerThreadIdToDbId.values()];
+  if (touchedThreadDbIds.length > 0) {
+    await tx.aISummary.updateMany({
+      where: { threadId: { in: touchedThreadDbIds }, invalidatedAt: null },
+      data: { invalidatedAt: new Date() },
+    });
+  }
+
   // ── 4. Apply changedMessages (labels / unread toggles) ───────
   for (const change of delta.changedMessages) {
     await tx.message.updateMany({

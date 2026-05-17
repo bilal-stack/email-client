@@ -219,6 +219,113 @@ describe("writeDelta", () => {
     expect(threads).toHaveLength(1);
   });
 
+  it("invalidates AISummary rows on threads that receive new messages", async () => {
+    const { accountId, userId } = await createAccount();
+
+    // Pre-seed a thread + AISummary row with invalidatedAt: null.
+    const thread = await prisma.thread.create({
+      data: {
+        accountId,
+        providerThreadId: "thr-sum",
+        subject: "S",
+        lastMessageAt: new Date(0),
+        unreadCount: 0,
+        labels: ["INBOX"] as unknown as Prisma.InputJsonValue,
+        participants: [] as unknown as Prisma.InputJsonValue,
+      },
+    });
+    await prisma.aISummary.create({
+      data: {
+        threadId: thread.id,
+        tldr: "old summary",
+        model: "claude-haiku-4-5-20251001",
+        promptVersion: "v1",
+        usage: { input_tokens: 1, output_tokens: 1 } as unknown as Prisma.InputJsonValue,
+        userMessageJson: "{}",
+        invalidatedAt: null,
+      },
+    });
+
+    const delta: DeltaResult = {
+      newMessages: [
+        buildMessage({ id: "m-incoming", threadId: "thr-sum", accountId }),
+      ],
+      changedMessages: [],
+      deletedIds: [],
+      nextCursor: "C1",
+    };
+    await prisma.$transaction((tx) =>
+      writeDelta({ account: { id: accountId, userId }, delta, tx }),
+    );
+
+    const summary = await prisma.aISummary.findUniqueOrThrow({
+      where: { threadId: thread.id },
+    });
+    expect(summary.invalidatedAt).not.toBeNull();
+    // Sanity — the rest of the row is unchanged.
+    expect(summary.tldr).toBe("old summary");
+  });
+
+  it("does NOT invalidate AISummary on a label-only changedMessages delta (no new mail)", async () => {
+    const { accountId, userId } = await createAccount();
+
+    const thread = await prisma.thread.create({
+      data: {
+        accountId,
+        providerThreadId: "thr-keep",
+        subject: "S",
+        lastMessageAt: new Date(0),
+        unreadCount: 0,
+        labels: ["INBOX"] as unknown as Prisma.InputJsonValue,
+        participants: [] as unknown as Prisma.InputJsonValue,
+      },
+    });
+    await prisma.message.create({
+      data: {
+        threadId: thread.id,
+        accountId,
+        providerMessageId: "m-flip",
+        providerThreadId: "thr-keep",
+        from: { email: "a@example.com" } as unknown as Prisma.InputJsonValue,
+        to: [] as unknown as Prisma.InputJsonValue,
+        cc: [] as unknown as Prisma.InputJsonValue,
+        bcc: [] as unknown as Prisma.InputJsonValue,
+        subject: "S",
+        snippet: "Sn",
+        receivedAt: new Date(),
+        isUnread: true,
+        labels: ["INBOX", "UNREAD"] as unknown as Prisma.InputJsonValue,
+        references: [] as unknown as Prisma.InputJsonValue,
+      },
+    });
+    await prisma.aISummary.create({
+      data: {
+        threadId: thread.id,
+        tldr: "still valid",
+        model: "claude-haiku-4-5-20251001",
+        promptVersion: "v1",
+        usage: { input_tokens: 1, output_tokens: 1 } as unknown as Prisma.InputJsonValue,
+        userMessageJson: "{}",
+        invalidatedAt: null,
+      },
+    });
+
+    const delta: DeltaResult = {
+      newMessages: [],
+      changedMessages: [{ id: "m-flip", isUnread: false, labels: ["INBOX"] }],
+      deletedIds: [],
+      nextCursor: "C2",
+    };
+    await prisma.$transaction((tx) =>
+      writeDelta({ account: { id: accountId, userId }, delta, tx }),
+    );
+
+    const summary = await prisma.aISummary.findUniqueOrThrow({
+      where: { threadId: thread.id },
+    });
+    expect(summary.invalidatedAt).toBeNull();
+  });
+
   it("empty delta advances cursor and returns empty threadIds without errors", async () => {
     const { accountId, userId } = await createAccount();
     const delta: DeltaResult = {

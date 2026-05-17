@@ -1,4 +1,5 @@
 import { MessageCard } from "@/app/inbox/[threadId]/_components/message-card";
+import { SummaryBanner } from "@/app/inbox/[threadId]/_components/summary-banner";
 import { ThreadActions } from "@/app/inbox/[threadId]/_components/thread-actions";
 import type { ThreadDTO, ThreadMessageDTO } from "@/app/inbox/_lib/dto";
 import { Button } from "@/components/ui/button";
@@ -55,6 +56,7 @@ export function ThreadView({ thread, messages }: ThreadViewProps) {
           <ThreadActions threadId={thread.id} />
         </div>
       </header>
+      <SummaryBanner threadId={thread.id} />
       <div className="flex-1 overflow-y-auto">
         {messages.length === 0 ? (
           <p className="p-6 text-sm text-zinc-500">This thread has no messages cached yet.</p>
