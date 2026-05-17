@@ -1,0 +1,10 @@
+{
+  "// TODO": "replace with real capture",
+  "_byName": {
+    "inbox": { "id": "FOLDER_INBOX", "displayName": "Inbox" },
+    "sentitems": { "id": "FOLDER_SENT", "displayName": "Sent Items" },
+    "drafts": { "id": "FOLDER_DRAFTS", "displayName": "Drafts" },
+    "deleteditems": { "id": "FOLDER_TRASH", "displayName": "Deleted Items" },
+    "archive": { "id": "FOLDER_ARCHIVE", "displayName": "Archive" }
+  }
+}

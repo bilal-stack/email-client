@@ -10,9 +10,15 @@ import { type MailboxSecret, getMailboxSecret } from "./auth";
 import { AuthError } from "./errors";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
+const MS_TOKEN_URL = `https://login.microsoftonline.com/${process.env.AZURE_AD_TENANT_ID ?? "common"}/oauth2/v2.0/token`;
 
 async function loadFixture<T = unknown>(name: string): Promise<T> {
   const path = resolve(process.cwd(), "tests", "fixtures", "gmail", name);
+  return JSON.parse(await readFile(path, "utf8")) as T;
+}
+
+async function loadGraphFixture<T = unknown>(name: string): Promise<T> {
+  const path = resolve(process.cwd(), "tests", "fixtures", "graph", name);
   return JSON.parse(await readFile(path, "utf8")) as T;
 }
 
@@ -196,6 +202,104 @@ describe("getMailboxSecret", () => {
     const { decrypt } = await import("@/lib/auth/crypto");
     const plaintext = decrypt(persisted.encryptedSecret, persisted.secretIv, persisted.secretTag);
     expect(JSON.parse(plaintext)).toEqual(returned);
+  });
+
+  it("graph refresh rotates the refresh token and the rotated value reaches the encrypted row", async () => {
+    // Security invariant: Microsoft Entra ALWAYS rotates the refresh token on
+    // every use. If we ever forget to persist the new one, the next sync hits
+    // `invalid_grant` and the user loses access silently. Decrypt the row after
+    // refresh and assert the new token is what landed.
+    const refreshed = await loadGraphFixture<{
+      access_token: string;
+      refresh_token: string;
+      expires_in: number;
+      scope: string;
+    }>("oauth.refresh.ok.json");
+    let refreshHits = 0;
+    server.use(
+      http.post(MS_TOKEN_URL, () => {
+        refreshHits++;
+        return HttpResponse.json(refreshed);
+      }),
+    );
+
+    const secret: MailboxSecret = {
+      accessToken: "EwA-OLD",
+      refreshToken: "MCRT-OLD",
+      expiresAt: Math.floor(Date.now() / 1000) - 60,
+      scope: "https://graph.microsoft.com/.default offline_access",
+    };
+    const { user, row } = await createMailAccountWith(secret, "graph");
+    createdAccountIds.push(row.id);
+    createdUserIds.push(user.id);
+
+    const returned = await getMailboxSecret(row.id);
+    expect(refreshHits).toBe(1);
+    expect(returned.accessToken).toBe(refreshed.access_token);
+    expect(returned.refreshToken).toBe(refreshed.refresh_token);
+    expect(returned.refreshToken).not.toBe(secret.refreshToken);
+
+    // Decrypt the persisted ciphertext and confirm the NEW refresh token is in it.
+    const { decrypt } = await import("@/lib/auth/crypto");
+    const persisted = await prisma.mailAccount.findUniqueOrThrow({ where: { id: row.id } });
+    const plain = JSON.parse(
+      decrypt(persisted.encryptedSecret, persisted.secretIv, persisted.secretTag),
+    ) as MailboxSecret;
+    expect(plain.refreshToken).toBe(refreshed.refresh_token);
+    expect(plain.refreshToken).not.toBe(secret.refreshToken);
+  });
+
+  it("graph invalid_grant throws AuthError and does NOT mutate the row", async () => {
+    const errBody = await loadGraphFixture<{ error: string }>("oauth.refresh.invalid_grant.json");
+    server.use(http.post(MS_TOKEN_URL, () => HttpResponse.json(errBody, { status: 400 })));
+
+    const secret: MailboxSecret = {
+      accessToken: "EwA-STALE",
+      refreshToken: "MCRT-REVOKED",
+      expiresAt: Math.floor(Date.now() / 1000) - 60,
+      scope: "scope",
+    };
+    const { user, row } = await createMailAccountWith(secret, "graph");
+    createdAccountIds.push(row.id);
+    createdUserIds.push(user.id);
+
+    const before = await prisma.mailAccount.findUniqueOrThrow({ where: { id: row.id } });
+    await expect(getMailboxSecret(row.id)).rejects.toBeInstanceOf(AuthError);
+    const after = await prisma.mailAccount.findUniqueOrThrow({ where: { id: row.id } });
+    expect(Buffer.compare(before.encryptedSecret, after.encryptedSecret)).toBe(0);
+    expect(Buffer.compare(before.secretIv, after.secretIv)).toBe(0);
+    expect(Buffer.compare(before.secretTag, after.secretTag)).toBe(0);
+  });
+
+  it("google refresh preserves the existing refresh token when the response omits one (regression)", async () => {
+    // Google omits `refresh_token` on most refresh responses; the auth helper
+    // must keep the stored one rather than blanking it. Guards the dispatch
+    // refactor that introduced the per-provider switch.
+    server.use(
+      http.post(GOOGLE_TOKEN_URL, () =>
+        HttpResponse.json({
+          access_token: "ya29.NEW",
+          expires_in: 3600,
+          scope: "https://www.googleapis.com/auth/gmail.modify",
+          token_type: "Bearer",
+          // NOTE: no `refresh_token` in the response — Google's normal shape.
+        }),
+      ),
+    );
+
+    const secret: MailboxSecret = {
+      accessToken: "ya29.STALE",
+      refreshToken: "1//RT-PRESERVED",
+      expiresAt: Math.floor(Date.now() / 1000) - 60,
+      scope: "https://www.googleapis.com/auth/gmail.modify",
+    };
+    const { user, row } = await createMailAccountWith(secret, "gmail");
+    createdAccountIds.push(row.id);
+    createdUserIds.push(user.id);
+
+    const returned = await getMailboxSecret(row.id);
+    expect(returned.accessToken).toBe("ya29.NEW");
+    expect(returned.refreshToken).toBe("1//RT-PRESERVED");
   });
 
   it("never writes the plaintext access token into the ciphertext bytes", async () => {

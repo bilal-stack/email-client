@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "SyncStateNotFound",
+    "message": "The deltaToken used in the request was not found. The client must resync by performing a full sync. Run a delta query without a deltaLink to get a fresh sync state."
+  }
+}

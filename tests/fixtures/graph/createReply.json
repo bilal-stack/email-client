@@ -1,0 +1,8 @@
+{
+  "// TODO": "replace with real capture",
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('me')/messages/$entity",
+  "id": "draft-reply-1",
+  "conversationId": "conv-original",
+  "subject": "Re: Hi",
+  "isDraft": true
+}

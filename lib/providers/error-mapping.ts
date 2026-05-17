@@ -34,6 +34,10 @@ import {
 interface GaxiosLikeError {
   code?: number | string;
   status?: number;
+  // `@microsoft/microsoft-graph-client`'s GraphError class exposes the HTTP
+  // status here, not in `status` or `response.status`. Probed against the real
+  // SDK to confirm — see commit history for `probe-graph-error.mjs`.
+  statusCode?: number;
   message?: string;
   response?: {
     status?: number;
@@ -46,6 +50,7 @@ function pickStatus(err: GaxiosLikeError): number | undefined {
   const fromResponse = err.response?.status;
   if (typeof fromResponse === "number") return fromResponse;
   if (typeof err.status === "number") return err.status;
+  if (typeof err.statusCode === "number") return err.statusCode;
   if (typeof err.code === "number") return err.code;
   // gaxios sometimes serializes the numeric status as a string in `.code`.
   if (typeof err.code === "string") {
@@ -116,6 +121,20 @@ export function mapError(e: unknown): ProviderError {
     if (/historyId.*not found|startHistoryId|Invalid.*startHistoryId/i.test(message)) {
       return new AuthError(`Sync history expired — reconnect required: ${message}`, { cause });
     }
+    return new NotFoundError(message, { cause });
+  }
+
+  if (status === 410) {
+    // Graph returns 410 Gone when a saved `@odata.deltaLink` has expired
+    // (typically after ~30 days of inactivity, sometimes sooner under tenant
+    // compaction). Map to AuthError so the UI prompts a reconnect; the next
+    // sync runs the cold-start path (no cursor → fresh delta link). Parallels
+    // the Gmail stale-historyId 404 branch above.
+    if (/delta.?link|deltaToken|resync required/i.test(message)) {
+      return new AuthError(`Sync delta expired — reconnect required: ${message}`, { cause });
+    }
+    // Other 410s (non-delta) most closely resemble a "gone" target — treat
+    // as NotFound. A bare 410 from any other Graph endpoint is rare.
     return new NotFoundError(message, { cause });
   }
 

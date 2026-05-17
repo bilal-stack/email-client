@@ -26,6 +26,7 @@
   "dependencies": {
     "@auth/prisma-adapter": "^2.7.4",
     "@hookform/resolvers": "^3.10.0",
+    "@microsoft/microsoft-graph-client": "^3.0.7",
     "@prisma/client": "^6.1.0",
     "@radix-ui/react-slot": "^1.1.1",
     "@tanstack/react-query": "^5.62.0",
@@ -53,6 +54,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
+    "@microsoft/microsoft-graph-types": "^2.43.1",
     "@playwright/test": "^1.49.0",
     "@tailwindcss/postcss": "^4.0.0",
     "@testing-library/dom": "^10.4.0",

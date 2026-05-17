@@ -1,0 +1,67 @@
+{
+  "// TODO": "replace with real capture",
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('me')/mailFolders('inbox')/messages",
+  "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$top=50&$skiptoken=NEXT_SKIP_TOKEN",
+  "value": [
+    {
+      "id": "m-conv-a-1",
+      "conversationId": "conv-A",
+      "subject": "Project Alpha kickoff",
+      "bodyPreview": "Welcome to the project",
+      "from": { "emailAddress": { "name": "Alice", "address": "alice@example.com" } },
+      "toRecipients": [{ "emailAddress": { "name": "Me", "address": "me@example.com" } }],
+      "ccRecipients": [],
+      "bccRecipients": [],
+      "receivedDateTime": "2026-05-15T09:00:00Z",
+      "isRead": false,
+      "categories": [],
+      "parentFolderId": "FOLDER_INBOX",
+      "hasAttachments": false
+    },
+    {
+      "id": "m-conv-b-1",
+      "conversationId": "conv-B",
+      "subject": "Re: Project Alpha kickoff",
+      "bodyPreview": "Thanks for the heads-up",
+      "from": { "emailAddress": { "name": "Bob", "address": "bob@example.com" } },
+      "toRecipients": [{ "emailAddress": { "name": "Me", "address": "me@example.com" } }],
+      "ccRecipients": [],
+      "bccRecipients": [],
+      "receivedDateTime": "2026-05-15T10:00:00Z",
+      "isRead": true,
+      "categories": ["Work"],
+      "parentFolderId": "FOLDER_INBOX",
+      "hasAttachments": false
+    },
+    {
+      "id": "m-conv-b-2",
+      "conversationId": "conv-B",
+      "subject": "Re: Project Alpha kickoff",
+      "bodyPreview": "Following up",
+      "from": { "emailAddress": { "name": "Carol", "address": "carol@example.com" } },
+      "toRecipients": [{ "emailAddress": { "name": "Me", "address": "me@example.com" } }],
+      "ccRecipients": [],
+      "bccRecipients": [],
+      "receivedDateTime": "2026-05-15T11:00:00Z",
+      "isRead": true,
+      "categories": [],
+      "parentFolderId": "FOLDER_INBOX",
+      "hasAttachments": false
+    },
+    {
+      "id": "m-conv-b-3",
+      "conversationId": "conv-B",
+      "subject": "Re: Project Alpha kickoff",
+      "bodyPreview": "Latest reply",
+      "from": { "emailAddress": { "name": "Dan", "address": "dan@example.com" } },
+      "toRecipients": [{ "emailAddress": { "name": "Me", "address": "me@example.com" } }],
+      "ccRecipients": [],
+      "bccRecipients": [],
+      "receivedDateTime": "2026-05-15T12:00:00Z",
+      "isRead": false,
+      "categories": [],
+      "parentFolderId": "FOLDER_INBOX",
+      "hasAttachments": true
+    }
+  ]
+}

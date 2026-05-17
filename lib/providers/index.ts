@@ -1,9 +1,10 @@
 // Provider registry. Selects an adapter from a `MailAccount.provider` string.
-// Gmail is wired up here; Graph and IMAP throw `NotImplementedError` until
-// their respective specs land.
+// Gmail and Graph are wired up; IMAP throws `NotImplementedError` until its
+// spec lands.
 
 import { prisma } from "@/lib/db";
 import { GmailProvider } from "./gmail";
+import { GraphProvider } from "./graph";
 import { type IEmailProvider, NotImplementedProvider } from "./types";
 
 export type ProviderName = "gmail" | "graph" | "imap";
@@ -32,6 +33,7 @@ export function buildProvider(name: ProviderName, accountId: string): IEmailProv
     case "gmail":
       return new GmailProvider(accountId);
     case "graph":
+      return new GraphProvider(accountId);
     case "imap":
       return new NotImplementedProvider();
     default:

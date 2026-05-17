@@ -1,0 +1,46 @@
+{
+  "// TODO": "replace with real capture",
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('me')/messages",
+  "value": [
+    {
+      "id": "m-thread-1",
+      "conversationId": "conv-T",
+      "subject": "Welcome to the project",
+      "bodyPreview": "Hi team",
+      "from": { "emailAddress": { "name": "Alice", "address": "alice@example.com" } },
+      "toRecipients": [{ "emailAddress": { "address": "me@example.com" } }],
+      "ccRecipients": [],
+      "bccRecipients": [],
+      "receivedDateTime": "2026-05-15T09:00:00Z",
+      "isRead": false,
+      "categories": [],
+      "parentFolderId": "FOLDER_INBOX",
+      "hasAttachments": false,
+      "body": { "contentType": "html", "content": "<p>Hi team, welcome aboard.</p>" },
+      "internetMessageHeaders": [
+        { "name": "Message-ID", "value": "<root@example.com>" }
+      ]
+    },
+    {
+      "id": "m-thread-2",
+      "conversationId": "conv-T",
+      "subject": "Re: Welcome to the project",
+      "bodyPreview": "Thanks",
+      "from": { "emailAddress": { "name": "Bob", "address": "bob@example.com" } },
+      "toRecipients": [{ "emailAddress": { "address": "me@example.com" } }],
+      "ccRecipients": [],
+      "bccRecipients": [],
+      "receivedDateTime": "2026-05-15T10:00:00Z",
+      "isRead": true,
+      "categories": ["Work"],
+      "parentFolderId": "FOLDER_INBOX",
+      "hasAttachments": false,
+      "body": { "contentType": "html", "content": "<p>Thanks!</p>" },
+      "internetMessageHeaders": [
+        { "name": "Message-ID", "value": "<reply1@example.com>" },
+        { "name": "In-Reply-To", "value": "<root@example.com>" },
+        { "name": "References", "value": "<root@example.com>" }
+      ]
+    }
+  ]
+}

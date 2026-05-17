@@ -1,0 +1,6 @@
+{
+  "error": {
+    "code": "ErrorItemNotFound",
+    "message": "The specified object has been permanently deleted."
+  }
+}

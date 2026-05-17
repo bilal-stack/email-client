@@ -1,45 +1,42 @@
-// Inngest cron function: pulls Gmail deltas every minute for every Gmail
-// `MailAccount` row and writes them transactionally to the DB via the shared
-// `writeDelta` helper (which all provider sync functions share).
+// Inngest cron function: pulls Microsoft Graph deltas every minute for every
+// Graph-backed `MailAccount` row and writes them transactionally to the DB
+// via the shared `writeDelta` helper.
 //
-// Error contract: `GmailProvider.syncDelta` throws canonical `ProviderError`
-// subtypes. `AuthError` (including the stale-historyId case) propagates up to
-// Inngest, which will surface it on the function run — the UI prompts a
-// reconnect in the next spec.
+// Mirrors `gmail-sync.ts` exactly except for the provider class instantiated
+// and the `where: { provider: "graph" }` filter on the account scan. The
+// canonical error taxonomy means `AuthError` from `GraphProvider.syncDelta`
+// (including the stale `@odata.deltaLink` 410 case) propagates to Inngest's
+// run log; the reconnect UI in `unified-inbox-ui` handles it.
 
 import { prisma } from "@/lib/db";
 import { writeDelta } from "@/lib/inngest/functions/_write-delta";
 import { inngest } from "@/lib/inngest/client";
-import { GmailProvider } from "@/lib/providers/gmail";
+import { GraphProvider } from "@/lib/providers/graph";
 import { emitInboxSyncEvent } from "@/lib/realtime/inbox-events";
 
-interface GmailAccountRow {
+interface GraphAccountRow {
   id: string;
   syncCursor: string | null;
   userId: string;
 }
 
-export const gmailSyncDelta = inngest.createFunction(
+export const graphSyncDelta = inngest.createFunction(
   {
-    id: "gmail-sync-delta",
-    // Global limit: 1 means two cron firings won't overlap. Per-account
-    // serialization would need a fan-out pattern (one event per account per
-    // tick keyed on accountId) — not worth the complexity until we have
-    // enough accounts that a single serial sync becomes a bottleneck.
+    id: "graph-sync-delta",
     concurrency: { limit: 1 },
   },
   { cron: "*/1 * * * *" },
   async ({ step }) => {
     const accounts = (await step.run("list-accounts", () =>
       prisma.mailAccount.findMany({
-        where: { provider: "gmail" },
+        where: { provider: "graph" },
         select: { id: true, syncCursor: true, userId: true },
       }),
-    )) as GmailAccountRow[];
+    )) as GraphAccountRow[];
 
     for (const account of accounts) {
       await step.run(`sync-${account.id}`, async () => {
-        const provider = new GmailProvider(account.id);
+        const provider = new GraphProvider(account.id);
         const delta = await provider.syncDelta(account.syncCursor);
 
         const touched = await prisma.$transaction((tx) =>
@@ -47,11 +44,7 @@ export const gmailSyncDelta = inngest.createFunction(
         );
 
         try {
-          if (
-            touched.threadIds.length > 0 ||
-            delta.deletedIds.length > 0 ||
-            delta.changedMessages.length > 0
-          ) {
+          if (touched.threadIds.length > 0 || delta.deletedIds.length > 0) {
             emitInboxSyncEvent(account.userId, {
               accountId: account.id,
               threadIds: touched.threadIds,
@@ -60,7 +53,9 @@ export const gmailSyncDelta = inngest.createFunction(
           }
         } catch (e) {
           // Best-effort: the DB commit already succeeded; SSE fan-out is opportunistic.
-          // Log shape only — see graph-sync.ts for the same hygiene note.
+          // Log shape only — `e` here is an in-memory emitter error with no
+          // token/provider state in scope today, but flattening to name+message
+          // keeps the no-secrets-in-logs checklist honest for future drift.
           const err = e as { name?: string; message?: string } | undefined;
           console.warn("inbox-events emit failed", { name: err?.name, message: err?.message });
         }

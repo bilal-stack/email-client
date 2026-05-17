@@ -1,0 +1,7 @@
+{
+  "token_type": "Bearer",
+  "scope": "https://graph.microsoft.com/.default offline_access",
+  "expires_in": 3600,
+  "access_token": "EwAoA-NEW-ACCESS-TOKEN",
+  "refresh_token": "MCRT-NEW-REFRESH-TOKEN"
+}

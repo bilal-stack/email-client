@@ -1,0 +1,6 @@
+{
+  "// TODO": "replace with real capture",
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#Collection(message)",
+  "@odata.nextLink": "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$skiptoken=COLD_PAGE_2",
+  "value": []
+}

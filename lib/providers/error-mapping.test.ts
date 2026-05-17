@@ -128,6 +128,34 @@ describe("mapError", () => {
     }
   });
 
+  it("maps Graph 410 with deltaToken-related message to AuthError with reconnect text", () => {
+    // Carries Graph's nested envelope shape so we ALSO regression-cover
+    // `pickMessage` reading `response.data.error.message` correctly.
+    const raw: FakeGaxiosError = {
+      code: 410,
+      message: "Gone",
+      response: {
+        status: 410,
+        data: {
+          error: {
+            message:
+              "The deltaToken used in the request was not found. Run a delta query without a deltaLink to get a fresh sync state.",
+          },
+        },
+      },
+    };
+    const mapped = mapError(raw);
+    expect(mapped).toBeInstanceOf(AuthError);
+    expect(mapped.message).toContain("Sync delta expired — reconnect required");
+  });
+
+  it("maps Graph 410 with a non-delta message to NotFoundError", () => {
+    const raw = gaxiosLike(410, "The specified object has been permanently deleted.");
+    const mapped = mapError(raw);
+    expect(mapped).toBeInstanceOf(NotFoundError);
+    expect(mapped).not.toBeInstanceOf(AuthError);
+  });
+
   it("strips circular gaxios refs so the cause is JSON-serializable", () => {
     // Build a circular structure that mirrors how googleapis surfaces errors
     // (config <-> response <-> request). Verifies the Inngest step-output

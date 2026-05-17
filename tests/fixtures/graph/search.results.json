@@ -1,0 +1,21 @@
+{
+  "// TODO": "replace with real capture",
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#users('me')/messages",
+  "value": [
+    {
+      "id": "m-search-1",
+      "conversationId": "conv-S1",
+      "subject": "Project Alpha update",
+      "bodyPreview": "Status",
+      "from": { "emailAddress": { "address": "alice@example.com" } },
+      "toRecipients": [{ "emailAddress": { "address": "me@example.com" } }],
+      "ccRecipients": [],
+      "bccRecipients": [],
+      "receivedDateTime": "2026-05-14T10:00:00Z",
+      "isRead": true,
+      "categories": [],
+      "parentFolderId": "FOLDER_INBOX",
+      "hasAttachments": false
+    }
+  ]
+}

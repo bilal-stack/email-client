@@ -1,0 +1,20 @@
+{
+  "// TODO": "replace with real capture",
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#attachments",
+  "value": [
+    {
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      "id": "att-1",
+      "name": "report.pdf",
+      "contentType": "application/pdf",
+      "size": 12345
+    },
+    {
+      "@odata.type": "#microsoft.graph.fileAttachment",
+      "id": "att-2",
+      "name": "chart.png",
+      "contentType": "image/png",
+      "size": 6789
+    }
+  ]
+}

@@ -4,10 +4,32 @@ Items surfaced during testing or audit that we deliberately deferred. Address af
 
 ---
 
-## Inbox-actions UX (security-reviewer nits from search-labels-archive-delete)
+## Graph-provider hardening (security-reviewer nits from graph-provider)
 
-- **Bulk label-remove via the popover doesn't work.**
-  `app/inbox/_components/bulk-action-bar.tsx` mounts `<LabelsPopover />` without passing `currentLabels`. The popover diffs against `currentLabels ?? []`, so the resulting `setThreadLabels` call only ever populates `add` — users can bulk-add a label but cannot bulk-remove one via this UI. Fix: pass the union of labels across the selected threads (compute in the selection store by tracking per-thread labels, or load lazily when the popover opens).
+- **SSRF defense-in-depth on `syncCursor`.**
+  `lib/providers/graph.ts` — incremental branch of `syncDelta` reads `cursor` from the DB and hands it verbatim to `client.api(cursor).get()`. Today the only writer is `_write-delta.ts` storing Graph-returned URLs, so practical exposure is low. Harden by asserting `new URL(cursor).hostname === "graph.microsoft.com"` at the top of the incremental branch before reuse. Spec's risk #4-ish area; reviewer flagged it under checklist item 7 (SSRF).
+
+- **`sanitizeCause` includes the full Graph error envelope.**
+  `lib/providers/error-mapping.ts` `sanitizeCause` strips circular refs but keeps `responseData` — which on Graph errors carries tenant id, request id, and user-readable details. Correct per the spec's gating (it only travels on `Error.cause`, never returned to the browser), but unbounded. A future caller that ever spreads `error.cause` into a Server Action would leak. Mitigation: explicitly project to `{ code, message }` only when serializing — drop the rest of `responseData` defensively.
+
+- **`AuthError.message` widens via Graph.**
+  Pre-existing TODO below (`ProviderError.message returned verbatim…`) anticipated this. **Confirmed by graph-provider review**: Graph's `pickMessage` returns the raw Graph envelope message, which can carry tenant flavor on 401s. Action remains the same: swap `sendDraft`'s pass-through of `e.message` to a fixed allow-list of canonical user-facing strings. Now actually load-bearing rather than speculative.
+
+## Graph-provider tests deferred (will be written tonight)
+
+`.agent-os/specs/2026-05-17-graph-provider/sub-specs/tests.md` lists ~6 test files / ~25 cases. We shipped a subset under time pressure for the eval; what landed and what's outstanding:
+
+**Landed:**
+- `lib/providers/error-mapping.test.ts` — extended for the 410 / deltaLink branch.
+- `lib/providers/auth.test.ts` — extended for Microsoft refresh-token rotation persistence.
+- `lib/providers/graph.test.ts` — happy-path coverage of `listThreads`, `getThread`, `setLabels`, `reply`, `search`. (9 tests.)
+- `lib/providers/graph.syncDelta.test.ts` — cold start, incremental, attachment fanout, expired-delta. (4 tests.)
+- `lib/providers/index.test.ts` — `"graph"` branch returns `GraphProvider`.
+
+**Still owed per the menu:**
+- `lib/inngest/functions/_write-delta.test.ts` — the extracted shared writer (idempotency, happy path). The writer is exercised transitively by the gmail-sync tests today, but a focused unit would catch a regression earlier.
+- `lib/inngest/functions/graph-sync.test.ts` — orchestration: provider-filter (`"graph"` only), SSE emit on success, no cursor advance on `AuthError`.
+- `lib/inngest/functions/gmail-sync.test.ts` — trim the writer-mechanics assertions that now belong to `_write-delta.test.ts`. Currently the file still asserts internals that moved; not broken, but redundant.
 
 ## Compose hardening (security-reviewer nits from compose-reply-forward)
 
