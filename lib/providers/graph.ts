@@ -48,6 +48,27 @@ const WELL_KNOWN_FOLDERS = [
   "deleteditems",
   "archive",
 ] as const;
+
+// Cursor URLs come from Graph itself (`@odata.deltaLink` / `@odata.nextLink`)
+// and are stored verbatim in `MailAccount.syncCursor`. Before we hand one back
+// to the SDK on an incremental sync we assert it targets the real Graph host
+// — a defense-in-depth measure against any future writer or DB-tamper path
+// landing a non-Graph URL. Throws so the surrounding try/catch routes it
+// through `mapError` and the user-visible error stays generic.
+function assertGraphCursorUrl(cursor: string): void {
+  let u: URL;
+  try {
+    u = new URL(cursor);
+  } catch {
+    throw new Error("Invalid Graph sync cursor: not a URL");
+  }
+  if (u.protocol !== "https:") {
+    throw new Error("Invalid Graph sync cursor: non-HTTPS scheme");
+  }
+  if (u.hostname !== "graph.microsoft.com") {
+    throw new Error("Invalid Graph sync cursor: unexpected host");
+  }
+}
 type WellKnownFolder = (typeof WELL_KNOWN_FOLDERS)[number];
 
 // Folder → synthetic label. Folders not in this map produce NO synthetic label
@@ -667,6 +688,14 @@ export class GraphProvider implements IEmailProvider {
       }
 
       // Incremental: follow the saved deltaLink. `cursor` IS the full URL.
+      // Defense-in-depth: assert the cursor points at the real Graph host
+      // before handing it to the SDK. Today the only writer to `syncCursor`
+      // is `_write-delta.ts` storing Graph-returned URLs, so practical
+      // exposure is low — but if any future writer or DB-tamper path lands a
+      // non-Graph URL here, this guard prevents the SDK from making an
+      // arbitrary outbound request. The cold-start path uses a relative
+      // string built in source, so it doesn't need this check.
+      assertGraphCursorUrl(cursor);
       const collected: GraphDeltaEntry[] = [];
       const deletedIds: MessageId[] = [];
       let nextUrl: string = cursor;

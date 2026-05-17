@@ -6,30 +6,24 @@ Items surfaced during testing or audit that we deliberately deferred. Address af
 
 ## Graph-provider hardening (security-reviewer nits from graph-provider)
 
-- **SSRF defense-in-depth on `syncCursor`.**
-  `lib/providers/graph.ts` — incremental branch of `syncDelta` reads `cursor` from the DB and hands it verbatim to `client.api(cursor).get()`. Today the only writer is `_write-delta.ts` storing Graph-returned URLs, so practical exposure is low. Harden by asserting `new URL(cursor).hostname === "graph.microsoft.com"` at the top of the incremental branch before reuse. Spec's risk #4-ish area; reviewer flagged it under checklist item 7 (SSRF).
-
-- **`sanitizeCause` includes the full Graph error envelope.**
-  `lib/providers/error-mapping.ts` `sanitizeCause` strips circular refs but keeps `responseData` — which on Graph errors carries tenant id, request id, and user-readable details. Correct per the spec's gating (it only travels on `Error.cause`, never returned to the browser), but unbounded. A future caller that ever spreads `error.cause` into a Server Action would leak. Mitigation: explicitly project to `{ code, message }` only when serializing — drop the rest of `responseData` defensively.
-
+- ~~**SSRF defense-in-depth on `syncCursor`.**~~ ✅ Resolved. `assertGraphCursorUrl` runs at the top of `syncDelta`'s incremental branch; rejects non-HTTPS / non-`graph.microsoft.com` URLs before the SDK call.
+- ~~**`sanitizeCause` includes the full Graph error envelope.**~~ ✅ Resolved. `sanitizeCause` now projects `response.data.error` down to `{ code, message }` only; tenant ids, request ids, and other envelope fields are dropped from the attached cause.
 - **`AuthError.message` widens via Graph.**
   Pre-existing TODO below (`ProviderError.message returned verbatim…`) anticipated this. **Confirmed by graph-provider review**: Graph's `pickMessage` returns the raw Graph envelope message, which can carry tenant flavor on 401s. Action remains the same: swap `sendDraft`'s pass-through of `e.message` to a fixed allow-list of canonical user-facing strings. Now actually load-bearing rather than speculative.
 
-## Graph-provider tests deferred (will be written tonight)
+## Graph-provider tests — closed
 
-`.agent-os/specs/2026-05-17-graph-provider/sub-specs/tests.md` lists ~6 test files / ~25 cases. We shipped a subset under time pressure for the eval; what landed and what's outstanding:
+All cases from `.agent-os/specs/2026-05-17-graph-provider/sub-specs/tests.md` are landed:
 
-**Landed:**
-- `lib/providers/error-mapping.test.ts` — extended for the 410 / deltaLink branch.
-- `lib/providers/auth.test.ts` — extended for Microsoft refresh-token rotation persistence.
-- `lib/providers/graph.test.ts` — happy-path coverage of `listThreads`, `getThread`, `setLabels`, `reply`, `search`. (9 tests.)
-- `lib/providers/graph.syncDelta.test.ts` — cold start, incremental, attachment fanout, expired-delta. (4 tests.)
+- `lib/providers/error-mapping.test.ts` — 410 / deltaLink branch.
+- `lib/providers/auth.test.ts` — Microsoft refresh-token rotation persistence.
+- `lib/providers/graph.test.ts` — `listThreads`, `getThread`, `setLabels`, `reply`, `search` (9 tests).
+- `lib/providers/graph.syncDelta.test.ts` — cold start, incremental, attachment fanout, expired-delta (4 tests).
 - `lib/providers/index.test.ts` — `"graph"` branch returns `GraphProvider`.
+- `lib/inngest/functions/_write-delta.test.ts` — shared writer happy path, idempotency, empty delta (3 tests).
+- `lib/inngest/functions/graph-sync.test.ts` — orchestration: provider-filter + `AuthError` propagation (2 tests).
 
-**Still owed per the menu:**
-- `lib/inngest/functions/_write-delta.test.ts` — the extracted shared writer (idempotency, happy path). The writer is exercised transitively by the gmail-sync tests today, but a focused unit would catch a regression earlier.
-- `lib/inngest/functions/graph-sync.test.ts` — orchestration: provider-filter (`"graph"` only), SSE emit on success, no cursor advance on `AuthError`.
-- `lib/inngest/functions/gmail-sync.test.ts` — trim the writer-mechanics assertions that now belong to `_write-delta.test.ts`. Currently the file still asserts internals that moved; not broken, but redundant.
+**Still owed:** `lib/inngest/functions/gmail-sync.test.ts` — once gmail-sync gains its own orchestration assertions (provider-filter, SSE-emit gating), the three writer-mechanics tests there can be removed since `_write-delta.test.ts` now covers them. Not load-bearing today; deferred.
 
 ## Compose hardening (security-reviewer nits from compose-reply-forward)
 
@@ -44,11 +38,8 @@ Items surfaced during testing or audit that we deliberately deferred. Address af
 
 ## IMAP-provider hardening (security-reviewer nits from imap-provider)
 
-- **Pin minimum TLS version on IMAP/SMTP clients.**
-  `lib/auth/index.ts:100`, `lib/providers/imap.ts:411` (IMAP) and `:576-577` (SMTP) set `secure: true` / `requireTLS: true` but rely on Node's default minimum (TLS 1.2). Hardening: pass `tls: { minVersion: "TLSv1.2" }` explicitly to imapflow and `tls: { minVersion: "TLSv1.2" }` to nodemailer's `createTransport`. Not load-bearing today (Node 20+ defaults are fine), but pins behavior against a future Node downgrade.
-
-- **`NODE_ENV` read at module-load time in `imap-host-guard.ts`.**
-  `lib/auth/imap-host-guard.ts:23` evaluates `process.env.NODE_ENV === "production"` at module load. Correct for Next.js runtime but means a Vitest test that mutates `NODE_ENV` after import won't flip the flag. Future test-author must `vi.resetModules()` between dev/prod cases — call out in the test file when those tests are written.
+- ~~**Pin minimum TLS version on IMAP/SMTP clients.**~~ ✅ Resolved. `tls: { minVersion: "TLSv1.2" }` passed to imapflow in both call sites (`lib/auth/index.ts` and `lib/providers/imap.ts`) and to nodemailer's `createTransport`.
+- ~~**`NODE_ENV` read at module-load time in `imap-host-guard.ts`.**~~ ✅ Documented + handled. `lib/auth/imap-host-guard.test.ts` uses `vi.stubEnv("NODE_ENV", "production")` + `vi.resetModules()` before dynamic import per dev/prod case.
 
 ## IMAP-provider follow-ups
 
@@ -63,11 +54,8 @@ Items surfaced during testing or audit that we deliberately deferred. Address af
   before its parent (multi-fold delivery) gets its own thread; a later sync
   pass could re-link but does not. Documented in spec risk #5.
 
-- **`MailboxSecret` discriminated-union refactor surfaced typecheck breaks in
-  existing test literals.** Fixed inline in each test file (`kind: "oauth"`
-  added + property accesses cast to `OAuthMailboxSecret`). The next test-author
-  pass should also expand `auth.test.ts` with an IMAP-secret round-trip case
-  per `tasks.md#8`.
+- ~~**`MailboxSecret` discriminated-union refactor surfaced typecheck breaks in
+  existing test literals.**~~ ✅ Resolved. `auth.test.ts` now covers the IMAP-secret round-trip case + the legacy-no-`kind` backward-compat decode.
 
 - **Attachment id heuristic in IMAP normalization.**
   `lib/providers/imap.ts` `normalizeFetchedMessage` uses `cid ?? index+1` as

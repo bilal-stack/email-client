@@ -94,10 +94,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
         }
 
         // 2. TLS-required IMAP connect → noop → logout. Refuse plaintext.
+        // Pin TLS 1.2+ explicitly so a future Node downgrade can't silently
+        // weaken the handshake.
         const client = new ImapFlow({
           host: c.imapHost,
           port: c.imapPort,
           secure: true,
+          tls: { minVersion: "TLSv1.2" },
           auth: { user: c.emailAddress, pass: c.password },
           logger: false,
         });

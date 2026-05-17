@@ -6,7 +6,11 @@ import { prisma } from "@/lib/db";
 import { http, HttpResponse } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
 import { server } from "../../tests/setup/msw";
-import { type OAuthMailboxSecret, getMailboxSecret } from "./auth";
+import {
+  type ImapMailboxSecret,
+  type OAuthMailboxSecret,
+  getMailboxSecret,
+} from "./auth";
 import { AuthError } from "./errors";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -308,6 +312,90 @@ describe("getMailboxSecret", () => {
     const returned = (await getMailboxSecret(row.id)) as OAuthMailboxSecret;
     expect(returned.accessToken).toBe("ya29.NEW");
     expect(returned.refreshToken).toBe("1//RT-PRESERVED");
+  });
+
+  it("imap secret round-trips unchanged and triggers NO OAuth refresh call", async () => {
+    // Track every OAuth token endpoint hit. The IMAP path must not touch
+    // either — IMAP credentials are static.
+    let oauthHits = 0;
+    server.use(
+      http.post(GOOGLE_TOKEN_URL, () => {
+        oauthHits++;
+        return HttpResponse.json({ access_token: "should-not-be-called", expires_in: 3600 });
+      }),
+      http.post(MS_TOKEN_URL, () => {
+        oauthHits++;
+        return HttpResponse.json({
+          access_token: "should-not-be-called",
+          refresh_token: "RT-NEW",
+          expires_in: 3600,
+          scope: "scope",
+          token_type: "Bearer",
+        });
+      }),
+    );
+
+    const imapSecret: ImapMailboxSecret = {
+      kind: "imap",
+      password: "app-password-XYZ",
+      imapHost: "imap.example.com",
+      imapPort: 993,
+      smtpHost: "smtp.example.com",
+      smtpPort: 465,
+    };
+    const user = await createTestUser();
+    const sealed = encrypt(JSON.stringify(imapSecret));
+    const row = await prisma.mailAccount.create({
+      data: {
+        userId: user.id,
+        provider: "imap",
+        emailAddress: `imap-${randomUUID()}@example.com`,
+        encryptedSecret: sealed.ciphertext,
+        secretIv: sealed.iv,
+        secretTag: sealed.tag,
+      },
+    });
+    createdAccountIds.push(row.id);
+    createdUserIds.push(user.id);
+
+    const result = await getMailboxSecret(row.id);
+    expect(result.kind).toBe("imap");
+    expect(result).toEqual(imapSecret);
+    expect(oauthHits).toBe(0);
+  });
+
+  it("backward-compat: a stored secret with no `kind` field is read back as `kind: 'oauth'`", async () => {
+    // Pre-discriminated-union rows have the OAuth shape with no `kind` field.
+    // The accessor must coerce them to the new union shape on read so the rest
+    // of the codebase can narrow safely. (Refresh isn't in scope here — pin a
+    // future expiry so we hit the fast path.)
+    const legacyShape = {
+      // NOTE: no `kind` field — that's the whole point.
+      accessToken: "ya29.LEGACY",
+      refreshToken: "1//RT-LEGACY",
+      expiresAt: Math.floor(Date.now() / 1000) + 3600,
+      scope: "https://www.googleapis.com/auth/gmail.modify",
+    };
+    const user = await createTestUser();
+    const sealed = encrypt(JSON.stringify(legacyShape));
+    const row = await prisma.mailAccount.create({
+      data: {
+        userId: user.id,
+        provider: "gmail",
+        emailAddress: `legacy-${randomUUID()}@example.com`,
+        encryptedSecret: sealed.ciphertext,
+        secretIv: sealed.iv,
+        secretTag: sealed.tag,
+      },
+    });
+    createdAccountIds.push(row.id);
+    createdUserIds.push(user.id);
+
+    const result = (await getMailboxSecret(row.id)) as OAuthMailboxSecret;
+    expect(result.kind).toBe("oauth");
+    expect(result.accessToken).toBe("ya29.LEGACY");
+    expect(result.refreshToken).toBe("1//RT-LEGACY");
+    expect(result.scope).toBe("https://www.googleapis.com/auth/gmail.modify");
   });
 
   it("never writes the plaintext access token into the ciphertext bytes", async () => {

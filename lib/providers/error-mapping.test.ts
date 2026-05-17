@@ -156,6 +156,47 @@ describe("mapError", () => {
     expect(mapped).not.toBeInstanceOf(AuthError);
   });
 
+  it("imap auth failure → AuthError with the fixed canonical message; host is NOT echoed", () => {
+    // Real imapflow auth-error shape: `authenticationFailed: true` + raw server
+    // response that contains host/user. The canonical message must be the
+    // exact allow-listed string and must NOT leak the host string anywhere
+    // — neither in `.message` nor in any field a caller is reasonably likely
+    // to print top-level. (`.cause` is allowed to carry the raw response for
+    // debugging since it never travels to the browser; the spec gates that
+    // via Server Action boundaries.)
+    const raw = {
+      authenticationFailed: true,
+      response: "Invalid credentials for foo@bar on imap.example.com:993",
+    };
+    const mapped = mapError(raw);
+    expect(mapped).toBeInstanceOf(AuthError);
+    expect(mapped.message).toBe(
+      "Invalid IMAP credentials — please re-check your app-password",
+    );
+    expect(mapped.message).not.toContain("imap.example.com");
+    expect(mapped.message).not.toContain("foo@bar");
+  });
+
+  it("imap responseStatus: BAD → UnknownProviderError('IMAP protocol error')", () => {
+    const mapped = mapError({ responseStatus: "BAD", response: "syntax error" });
+    expect(mapped).toBeInstanceOf(UnknownProviderError);
+    expect(mapped.message).toBe("IMAP protocol error");
+  });
+
+  it("imap network error code (ECONNREFUSED) → TransientError('IMAP connection failed')", () => {
+    // Without one of `responseStatus` / `authenticationFailed`, the
+    // looksLikeImapflowError check would fail — give it a responseStatus so
+    // the imap branch fires. (The shape mirrors what imapflow throws when it
+    // surfaces a wrapped socket error before any IMAP-protocol response.)
+    const mapped = mapError({
+      responseStatus: "NO",
+      response: "connection refused",
+      code: "ECONNREFUSED",
+    });
+    expect(mapped).toBeInstanceOf(TransientError);
+    expect(mapped.message).toBe("IMAP connection failed");
+  });
+
   it("strips circular gaxios refs so the cause is JSON-serializable", () => {
     // Build a circular structure that mirrors how googleapis surfaces errors
     // (config <-> response <-> request). Verifies the Inngest step-output

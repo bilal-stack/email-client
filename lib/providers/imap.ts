@@ -409,6 +409,7 @@ export class ImapProvider implements IEmailProvider {
       host: secret.imapHost,
       port,
       secure: true,
+      tls: { minVersion: "TLSv1.2" },
       auth: { user: row.emailAddress, pass: secret.password },
       logger: false,
     });
@@ -575,6 +576,7 @@ export class ImapProvider implements IEmailProvider {
         // 465 = implicit TLS; for other ports require STARTTLS.
         secure: smtpPort === 465,
         requireTLS: smtpPort !== 465,
+        tls: { minVersion: "TLSv1.2" },
         auth: { user: emailAddress, pass: secret.password },
       });
       const info = await transport.sendMail(

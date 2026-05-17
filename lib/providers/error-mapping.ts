@@ -108,12 +108,26 @@ function sanitizeCause(e: unknown): unknown {
   if (e === null || e === undefined) return e;
   if (typeof e !== "object") return e;
   const src = e as GaxiosLikeError & { name?: string; stack?: string };
+  // Project the response error envelope to `{ code, message }` only — Graph's
+  // raw envelope can carry tenant ids, request ids, and user-readable strings
+  // that we don't want sliding into a future caller's response if one ever
+  // spreads `error.cause` into a Server Action. Today the cause only travels
+  // on the Error object and never reaches the browser; this projection is
+  // defense-in-depth against that contract drifting.
+  const rawError = src.response?.data?.error;
+  const responseError =
+    rawError && typeof rawError === "object"
+      ? {
+          code: (rawError as { code?: unknown }).code,
+          message: (rawError as { message?: unknown }).message,
+        }
+      : undefined;
   return {
     name: src.name,
     message: src.message,
     code: src.code,
     status: pickStatus(src),
-    responseData: src.response?.data,
+    responseError,
     // Keep stack as a string — already serializable.
     stack: src.stack,
   };
