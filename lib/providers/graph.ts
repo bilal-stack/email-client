@@ -17,7 +17,7 @@
 //     User labels round-trip through Graph **categories**.
 
 import { Client } from "@microsoft/microsoft-graph-client";
-import { type MailboxSecret, getMailboxSecret } from "@/lib/providers/auth";
+import { type OAuthMailboxSecret, getMailboxSecret } from "@/lib/providers/auth";
 import { mapError } from "@/lib/providers/error-mapping";
 import type {
   CanonicalAddress,
@@ -62,7 +62,7 @@ const FOLDER_TO_SYNTHETIC: Record<WellKnownFolder, string | null> = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-function graphClient(secret: MailboxSecret): Client {
+function graphClient(secret: OAuthMailboxSecret): Client {
   // The auth provider here is a static-token shim — we already refreshed via
   // getMailboxSecret. The MS SDK won't refresh on its own with this shape.
   return Client.init({
@@ -372,6 +372,7 @@ export class GraphProvider implements IEmailProvider {
   async listThreads(opts: ListThreadsOptions): Promise<ListResult<CanonicalThread>> {
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Graph account");
       const client = graphClient(secret);
       await this.loadFolderIds(client);
 
@@ -395,6 +396,7 @@ export class GraphProvider implements IEmailProvider {
   async getThread(id: ThreadId): Promise<CanonicalThread> {
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Graph account");
       const client = graphClient(secret);
       await this.loadFolderIds(client);
 
@@ -418,6 +420,7 @@ export class GraphProvider implements IEmailProvider {
   async sendMessage(draft: SendDraft): Promise<{ id: MessageId; threadId: ThreadId }> {
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Graph account");
       const client = graphClient(secret);
       await client.api("/me/sendMail").post({
         message: buildGraphMessage(draft),
@@ -448,6 +451,7 @@ export class GraphProvider implements IEmailProvider {
     let draftId: string | null = null;
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Graph account");
       const client = graphClient(secret);
 
       // Step 1: createReply produces a draft in Drafts folder. Sets conversation,
@@ -478,6 +482,7 @@ export class GraphProvider implements IEmailProvider {
       if (draftId) {
         try {
           const secret = await getMailboxSecret(this.accountId);
+          if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Graph account");
           const client = graphClient(secret);
           await client.api(`/me/messages/${draftId}`).delete();
         } catch {
@@ -492,6 +497,7 @@ export class GraphProvider implements IEmailProvider {
     if (ids.length === 0) return;
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Graph account");
       const client = graphClient(secret);
       await mapConcurrent(ids, 10, async (id) => {
         await client.api(`/me/messages/${id}/move`).post({ destinationId: "archive" });
@@ -505,6 +511,7 @@ export class GraphProvider implements IEmailProvider {
     if (ids.length === 0) return;
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Graph account");
       const client = graphClient(secret);
       await mapConcurrent(ids, 10, async (id) => {
         await client.api(`/me/messages/${id}/move`).post({ destinationId: "deleteditems" });
@@ -518,6 +525,7 @@ export class GraphProvider implements IEmailProvider {
     if (ids.length === 0) return;
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Graph account");
       const client = graphClient(secret);
       // Graph's $batch ceiling is 20 requests; loop in chunks.
       for (const group of chunk(ids, 20)) {
@@ -539,6 +547,7 @@ export class GraphProvider implements IEmailProvider {
     if (ids.length === 0) return;
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Graph account");
       const client = graphClient(secret);
       await this.loadFolderIds(client);
 
@@ -610,6 +619,7 @@ export class GraphProvider implements IEmailProvider {
   async search(query: string, opts?: { limit?: number }): Promise<ListResult<CanonicalThread>> {
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Graph account");
       const client = graphClient(secret);
       await this.loadFolderIds(client);
       const top = opts?.limit ?? 50;
@@ -632,6 +642,7 @@ export class GraphProvider implements IEmailProvider {
   async syncDelta(cursor: string | null): Promise<DeltaResult> {
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Graph account");
       const client = graphClient(secret);
       await this.loadFolderIds(client);
 

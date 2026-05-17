@@ -3,5 +3,6 @@
 
 import { gmailSyncDelta } from "./gmail-sync";
 import { graphSyncDelta } from "./graph-sync";
+import { imapSyncPoll } from "./imap-sync";
 
-export const inngestFunctions = [gmailSyncDelta, graphSyncDelta];
+export const inngestFunctions = [gmailSyncDelta, graphSyncDelta, imapSyncPoll];

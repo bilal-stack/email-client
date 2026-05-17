@@ -5,14 +5,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { MailboxSecret } from "./auth";
 import { GmailProvider } from "./gmail";
 import { GraphProvider } from "./graph";
+import { ImapProvider } from "./imap";
 import { buildProvider, getProviderForAccount } from "./index";
-import { NotImplementedProvider } from "./types";
 
 async function createAccountWithProvider(provider: string): Promise<string> {
   const user = await prisma.user.create({
     data: { email: `idx-${randomUUID()}@example.com` },
   });
   const secret: MailboxSecret = {
+    kind: "oauth",
     accessToken: "ya29.X",
     refreshToken: "1//RT",
     expiresAt: Math.floor(Date.now() / 1000) + 3600,
@@ -61,10 +62,10 @@ describe("getProviderForAccount", () => {
     expect(provider).toBeInstanceOf(GraphProvider);
   });
 
-  it("returns a NotImplementedProvider for an imap row", async () => {
+  it("returns an ImapProvider for an imap row", async () => {
     const accountId = await createAccountWithProvider("imap");
     const provider = await getProviderForAccount(accountId);
-    expect(provider).toBeInstanceOf(NotImplementedProvider);
+    expect(provider).toBeInstanceOf(ImapProvider);
   });
 });
 
@@ -78,7 +79,7 @@ describe("buildProvider", () => {
     expect(buildProvider("graph", "acc-1")).toBeInstanceOf(GraphProvider);
   });
 
-  it("builds a NotImplementedProvider for imap", () => {
-    expect(buildProvider("imap", "acc-1")).toBeInstanceOf(NotImplementedProvider);
+  it("builds an ImapProvider for imap", () => {
+    expect(buildProvider("imap", "acc-1")).toBeInstanceOf(ImapProvider);
   });
 });

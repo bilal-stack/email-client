@@ -23,12 +23,26 @@ import { decrypt, encrypt } from "@/lib/auth/crypto";
 import { prisma } from "@/lib/db";
 import { AuthError } from "@/lib/providers/errors";
 
-export interface MailboxSecret {
+export type MailboxSecret = OAuthMailboxSecret | ImapMailboxSecret;
+
+export interface OAuthMailboxSecret {
+  kind: "oauth";
   accessToken: string;
   refreshToken: string;
   /** Epoch seconds. */
   expiresAt: number;
   scope: string;
+}
+
+export interface ImapMailboxSecret {
+  kind: "imap";
+  password: string;
+  imapHost: string;
+  /** Defaults to 993 when omitted. */
+  imapPort?: number;
+  smtpHost: string;
+  /** Defaults to 465 when omitted. */
+  smtpPort?: number;
 }
 
 interface GoogleRefreshResponse {
@@ -55,16 +69,27 @@ export async function getMailboxSecret(accountId: string): Promise<MailboxSecret
   });
 
   const plaintext = decrypt(row.encryptedSecret, row.secretIv, row.secretTag);
-  const secret = JSON.parse(plaintext) as MailboxSecret;
+  // Backward-compat: rows written before the discriminated-union refactor
+  // have no `kind` field. Treat them as OAuth (the only shape that existed).
+  // The next refresh writes back the migrated shape with `kind: "oauth"`.
+  const raw = JSON.parse(plaintext) as Partial<MailboxSecret> & Record<string, unknown>;
+  const secret: MailboxSecret =
+    "kind" in raw && raw.kind
+      ? (raw as MailboxSecret)
+      : ({ kind: "oauth", ...raw } as OAuthMailboxSecret);
+
+  // IMAP secrets never expire — passwords are static. Return unchanged.
+  if (secret.kind === "imap") return secret;
 
   const now = Math.floor(Date.now() / 1000);
   if (secret.expiresAt - REFRESH_SKEW_SECONDS > now) return secret;
 
-  let next: MailboxSecret;
+  let next: OAuthMailboxSecret;
   switch (row.provider) {
     case "gmail": {
       const r = await refreshGoogleToken(secret.refreshToken);
       next = {
+        kind: "oauth",
         accessToken: r.access_token,
         // Google rarely rotates; keep the stored refresh token.
         refreshToken: secret.refreshToken,
@@ -76,7 +101,7 @@ export async function getMailboxSecret(accountId: string): Promise<MailboxSecret
     case "graph": {
       const r = await refreshMicrosoftToken(secret.refreshToken, secret.scope);
       // MS rotates on every refresh; r already carries the new refreshToken.
-      next = r;
+      next = { kind: "oauth", ...r };
       break;
     }
     case "imap":

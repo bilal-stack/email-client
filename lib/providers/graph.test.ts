@@ -29,6 +29,7 @@ async function createAccount(): Promise<string> {
     data: { email: `graph-${randomUUID()}@example.com` },
   });
   const secret: MailboxSecret = {
+    kind: "oauth",
     accessToken: "EwA-TEST",
     refreshToken: "MCRT-TEST",
     expiresAt: Math.floor(Date.now() / 1000) + 3600,

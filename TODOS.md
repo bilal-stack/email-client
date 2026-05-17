@@ -42,6 +42,47 @@ Items surfaced during testing or audit that we deliberately deferred. Address af
 - **MIME deny list could expand.**
   Current list covers `.ps1`, `.sh`, etc. via `EXT_DENY` but doesn't include MIMEs like `application/x-powershell`, `application/x-php`, `application/wasm`. The extension-based deny backstops the common cases; consider expanding both lists if the threat model widens (e.g. webshells via email).
 
+## IMAP-provider hardening (security-reviewer nits from imap-provider)
+
+- **Pin minimum TLS version on IMAP/SMTP clients.**
+  `lib/auth/index.ts:100`, `lib/providers/imap.ts:411` (IMAP) and `:576-577` (SMTP) set `secure: true` / `requireTLS: true` but rely on Node's default minimum (TLS 1.2). Hardening: pass `tls: { minVersion: "TLSv1.2" }` explicitly to imapflow and `tls: { minVersion: "TLSv1.2" }` to nodemailer's `createTransport`. Not load-bearing today (Node 20+ defaults are fine), but pins behavior against a future Node downgrade.
+
+- **`NODE_ENV` read at module-load time in `imap-host-guard.ts`.**
+  `lib/auth/imap-host-guard.ts:23` evaluates `process.env.NODE_ENV === "production"` at module load. Correct for Next.js runtime but means a Vitest test that mutates `NODE_ENV` after import won't flip the flag. Future test-author must `vi.resetModules()` between dev/prod cases — call out in the test file when those tests are written.
+
+## IMAP-provider follow-ups
+
+- **`changedMessages` / `deletedIds` always empty in `ImapProvider.syncDelta`.**
+  `lib/providers/imap.ts` — UID-range polling can't see flag changes or
+  deletions on already-known UIDs. Documented MVP gap in spec non-goals.
+  Future fix: CONDSTORE/QRESYNC delta-by-modseq, or a periodic full-list
+  comparison pass to detect deletions.
+
+- **Out-of-order message arrival can split a thread.**
+  `lib/providers/imap.ts` `resolveThreadId` — a child message that arrives
+  before its parent (multi-fold delivery) gets its own thread; a later sync
+  pass could re-link but does not. Documented in spec risk #5.
+
+- **`MailboxSecret` discriminated-union refactor surfaced typecheck breaks in
+  existing test literals.** Fixed inline in each test file (`kind: "oauth"`
+  added + property accesses cast to `OAuthMailboxSecret`). The next test-author
+  pass should also expand `auth.test.ts` with an IMAP-secret round-trip case
+  per `tasks.md#8`.
+
+- **Attachment id heuristic in IMAP normalization.**
+  `lib/providers/imap.ts` `normalizeFetchedMessage` uses `cid ?? index+1` as
+  the attachment id. Technical-spec called out using imapflow's
+  BODYSTRUCTURE part path (e.g. `"2.1"`); mailparser doesn't surface that
+  directly. Acceptable for the MVP since the column is opaque, but revisit
+  if a later spec (attachments-fetch) needs the actual part path to download
+  bytes back via `client.download(partPath)`.
+
+- **`getThread` issues one HEADER search per Message-ID hop.**
+  `lib/providers/imap.ts` walks `In-Reply-To` / `References` with a search
+  per id. The 50-message cap bounds the chatter but a single multi-id search
+  via SearchObject would be cheaper. Defer until a real Yahoo/AOL mailbox
+  shows the latency is user-visible.
+
 ---
 
 ## Explicitly **not** addressing (future watch-outs, out of scope for current submission)

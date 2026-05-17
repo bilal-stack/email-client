@@ -11,7 +11,7 @@
 //   - `messages.get` calls during sync are bounded at concurrency 10
 //     (spec calls out Gmail's 250 qu/s quota; this keeps us well under).
 
-import { type MailboxSecret, getMailboxSecret } from "@/lib/providers/auth";
+import { type OAuthMailboxSecret, getMailboxSecret } from "@/lib/providers/auth";
 import { mapError } from "@/lib/providers/error-mapping";
 import { type gmail_v1, google } from "googleapis";
 import type {
@@ -31,7 +31,7 @@ import type {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────
 
-function gmailClient(secret: MailboxSecret): gmail_v1.Gmail {
+function gmailClient(secret: OAuthMailboxSecret): gmail_v1.Gmail {
   // `googleapis` *can* refresh on its own if you set both access and refresh
   // tokens on the OAuth2 client — we intentionally do not. Token refresh is
   // centralized in `lib/providers/auth.ts` (architectural rule #7).
@@ -318,6 +318,7 @@ export class GmailProvider implements IEmailProvider {
   async listThreads(opts: ListThreadsOptions): Promise<ListResult<CanonicalThread>> {
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Gmail account");
       const gmail = gmailClient(secret);
       const res = await gmail.users.threads.list({
         userId: "me",
@@ -335,6 +336,7 @@ export class GmailProvider implements IEmailProvider {
   async getThread(id: ThreadId): Promise<CanonicalThread> {
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Gmail account");
       const gmail = gmailClient(secret);
       const res = await gmail.users.threads.get({
         userId: "me",
@@ -350,6 +352,7 @@ export class GmailProvider implements IEmailProvider {
   async sendMessage(draft: SendDraft): Promise<{ id: MessageId; threadId: ThreadId }> {
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Gmail account");
       const gmail = gmailClient(secret);
       const raw = base64UrlEncode(buildRfc2822(draft));
       const res = await gmail.users.messages.send({
@@ -365,6 +368,7 @@ export class GmailProvider implements IEmailProvider {
   async reply(threadId: ThreadId, draft: SendDraft): Promise<{ id: MessageId }> {
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Gmail account");
       const gmail = gmailClient(secret);
       const raw = base64UrlEncode(buildRfc2822(draft, { threadHeaders: true }));
       const res = await gmail.users.messages.send({
@@ -381,6 +385,7 @@ export class GmailProvider implements IEmailProvider {
     if (ids.length === 0) return;
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Gmail account");
       const gmail = gmailClient(secret);
       await gmail.users.messages.batchModify({
         userId: "me",
@@ -395,6 +400,7 @@ export class GmailProvider implements IEmailProvider {
     if (ids.length === 0) return;
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Gmail account");
       const gmail = gmailClient(secret);
       // No batch endpoint for trash — bounded Promise.all.
       await mapConcurrent(ids, 10, (id) =>
@@ -409,6 +415,7 @@ export class GmailProvider implements IEmailProvider {
     if (ids.length === 0) return;
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Gmail account");
       const gmail = gmailClient(secret);
       await gmail.users.messages.batchModify({
         userId: "me",
@@ -423,6 +430,7 @@ export class GmailProvider implements IEmailProvider {
     if (ids.length === 0) return;
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Gmail account");
       const gmail = gmailClient(secret);
       await gmail.users.messages.batchModify({
         userId: "me",
@@ -440,6 +448,7 @@ export class GmailProvider implements IEmailProvider {
   async search(query: string, opts?: { limit?: number }): Promise<ListResult<CanonicalThread>> {
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Gmail account");
       const gmail = gmailClient(secret);
       const res = await gmail.users.threads.list({
         userId: "me",
@@ -456,6 +465,7 @@ export class GmailProvider implements IEmailProvider {
   async syncDelta(cursor: string | null): Promise<DeltaResult> {
     try {
       const secret = await getMailboxSecret(this.accountId);
+      if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Gmail account");
       const gmail = gmailClient(secret);
 
       // Cold start: no cursor → fetch the current historyId from the profile

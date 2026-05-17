@@ -37,6 +37,7 @@ async function createAccount(syncCursor: string | null): Promise<{
     data: { email: `sync-${randomUUID()}@example.com` },
   });
   const secret: MailboxSecret = {
+    kind: "oauth",
     accessToken: "ya29.X",
     refreshToken: "1//RT",
     expiresAt: Math.floor(Date.now() / 1000) + 3600,

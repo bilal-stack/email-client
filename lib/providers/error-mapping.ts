@@ -31,6 +31,29 @@ import {
   UnknownProviderError,
 } from "./errors";
 
+// ─── IMAP (imapflow) error shape ──────────────────────────────────────────
+// imapflow surfaces errors with distinctive properties — `responseStatus`
+// ("NO" / "BAD") or `authenticationFailed` — that no Gmail/Graph error
+// shape carries. We detect with a presence check on those keys and never
+// interpolate the host/username into the canonical message (per spec risk
+// #4 — app-password leakage in error messages).
+interface ImapflowLikeError {
+  authenticationFailed?: boolean;
+  serverResponseCode?: string;
+  responseStatus?: "NO" | "BAD" | "OK" | "BYE" | "PREAUTH";
+  /** Raw response text from the server. May contain host/user — never log. */
+  response?: string;
+  /** Node `net` error codes: ECONNREFUSED, EHOSTUNREACH, ETIMEDOUT, ETLS. */
+  code?: string | number;
+  message?: string;
+}
+
+function looksLikeImapflowError(e: unknown): boolean {
+  if (e === null || typeof e !== "object") return false;
+  const o = e as Record<string, unknown>;
+  return "responseStatus" in o || "authenticationFailed" in o;
+}
+
 interface GaxiosLikeError {
   code?: number | string;
   status?: number;
@@ -99,6 +122,36 @@ function sanitizeCause(e: unknown): unknown {
 export function mapError(e: unknown): ProviderError {
   // Idempotent — if we've already mapped this once, return as-is.
   if (e instanceof ProviderError) return e;
+
+  // ─── imapflow path ───────────────────────────────────────────────────
+  // Must run before the gaxios/Graph paths — imapflow errors don't carry
+  // an HTTP status so they'd otherwise fall through to the "no status →
+  // TransientError" branch and lose their auth/protocol distinction.
+  if (looksLikeImapflowError(e)) {
+    const ie = e as ImapflowLikeError;
+    const imapCause = sanitizeCause(e);
+    if (
+      ie.authenticationFailed === true ||
+      (ie.responseStatus === "NO" &&
+        /auth(entication)?|credentials|invalid/i.test(ie.response ?? ""))
+    ) {
+      // Fixed canonical message — no host, no username.
+      return new AuthError(
+        "Invalid IMAP credentials — please re-check your app-password",
+        { cause: imapCause },
+      );
+    }
+    if (ie.responseStatus === "BAD") {
+      return new UnknownProviderError("IMAP protocol error", { cause: imapCause });
+    }
+    if (
+      typeof ie.code === "string" &&
+      /ECONNREFUSED|EHOSTUNREACH|ETIMEDOUT|ENETUNREACH|ETLS/.test(ie.code)
+    ) {
+      return new TransientError("IMAP connection failed", { cause: imapCause });
+    }
+    // Any other imapflow error falls through to the generic path below.
+  }
 
   const err = (e ?? {}) as GaxiosLikeError;
   const status = pickStatus(err);

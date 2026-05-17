@@ -6,7 +6,7 @@ import { prisma } from "@/lib/db";
 import { http, HttpResponse } from "msw";
 import { afterEach, describe, expect, it } from "vitest";
 import { server } from "../../tests/setup/msw";
-import { type MailboxSecret, getMailboxSecret } from "./auth";
+import { type OAuthMailboxSecret, getMailboxSecret } from "./auth";
 import { AuthError } from "./errors";
 
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -28,7 +28,7 @@ async function createTestUser() {
   });
 }
 
-async function createMailAccountWith(secret: MailboxSecret, provider = "gmail") {
+async function createMailAccountWith(secret: OAuthMailboxSecret, provider = "gmail") {
   const user = await createTestUser();
   const sealed = encrypt(JSON.stringify(secret));
   const row = await prisma.mailAccount.create({
@@ -69,7 +69,8 @@ describe("getMailboxSecret", () => {
     );
 
     const futureExpiry = Math.floor(Date.now() / 1000) + 60 * 10; // 10 minutes ahead
-    const secret: MailboxSecret = {
+    const secret: OAuthMailboxSecret = {
+      kind: "oauth",
       accessToken: "ya29.ORIGINAL",
       refreshToken: "1//RT-ORIGINAL",
       expiresAt: futureExpiry,
@@ -79,7 +80,7 @@ describe("getMailboxSecret", () => {
     createdAccountIds.push(row.id);
     createdUserIds.push(user.id);
 
-    const result = await getMailboxSecret(row.id);
+    const result = (await getMailboxSecret(row.id)) as OAuthMailboxSecret;
 
     expect(result.accessToken).toBe("ya29.ORIGINAL");
     expect(refreshHits).toBe(0);
@@ -100,7 +101,8 @@ describe("getMailboxSecret", () => {
     );
 
     const nearExpiry = Math.floor(Date.now() / 1000) + 30; // inside skew
-    const secret: MailboxSecret = {
+    const secret: OAuthMailboxSecret = {
+      kind: "oauth",
       accessToken: "ya29.STALE",
       refreshToken: "1//RT-OK",
       expiresAt: nearExpiry,
@@ -110,7 +112,7 @@ describe("getMailboxSecret", () => {
     createdAccountIds.push(row.id);
     createdUserIds.push(user.id);
 
-    const result = await getMailboxSecret(row.id);
+    const result = (await getMailboxSecret(row.id)) as OAuthMailboxSecret;
 
     expect(refreshHits).toBe(1);
     expect(result.accessToken).toBe(refreshed.access_token);
@@ -137,7 +139,8 @@ describe("getMailboxSecret", () => {
     );
 
     const pastExpiry = Math.floor(Date.now() / 1000) - 3600;
-    const secret: MailboxSecret = {
+    const secret: OAuthMailboxSecret = {
+      kind: "oauth",
       accessToken: "ya29.EXPIRED",
       refreshToken: "1//RT-OK",
       expiresAt: pastExpiry,
@@ -147,7 +150,7 @@ describe("getMailboxSecret", () => {
     createdAccountIds.push(row.id);
     createdUserIds.push(user.id);
 
-    const result = await getMailboxSecret(row.id);
+    const result = (await getMailboxSecret(row.id)) as OAuthMailboxSecret;
     expect(refreshHits).toBe(1);
     expect(result.accessToken).toBe(refreshed.access_token);
   });
@@ -157,7 +160,8 @@ describe("getMailboxSecret", () => {
     server.use(http.post(GOOGLE_TOKEN_URL, () => HttpResponse.json(errBody, { status: 400 })));
 
     const pastExpiry = Math.floor(Date.now() / 1000) - 60;
-    const secret: MailboxSecret = {
+    const secret: OAuthMailboxSecret = {
+      kind: "oauth",
       accessToken: "ya29.STALE",
       refreshToken: "1//RT-REVOKED",
       expiresAt: pastExpiry,
@@ -185,7 +189,8 @@ describe("getMailboxSecret", () => {
     }>("oauth.refresh.ok.json");
     server.use(http.post(GOOGLE_TOKEN_URL, () => HttpResponse.json(refreshed)));
 
-    const secret: MailboxSecret = {
+    const secret: OAuthMailboxSecret = {
+      kind: "oauth",
       accessToken: "ya29.STALE",
       refreshToken: "1//RT-OK",
       expiresAt: Math.floor(Date.now() / 1000) - 5,
@@ -195,7 +200,7 @@ describe("getMailboxSecret", () => {
     createdAccountIds.push(row.id);
     createdUserIds.push(user.id);
 
-    const returned = await getMailboxSecret(row.id);
+    const returned = (await getMailboxSecret(row.id)) as OAuthMailboxSecret;
     const persisted = await prisma.mailAccount.findUniqueOrThrow({ where: { id: row.id } });
 
     // Decrypt the persisted row via the same crypto module and compare.
@@ -223,7 +228,8 @@ describe("getMailboxSecret", () => {
       }),
     );
 
-    const secret: MailboxSecret = {
+    const secret: OAuthMailboxSecret = {
+      kind: "oauth",
       accessToken: "EwA-OLD",
       refreshToken: "MCRT-OLD",
       expiresAt: Math.floor(Date.now() / 1000) - 60,
@@ -233,7 +239,7 @@ describe("getMailboxSecret", () => {
     createdAccountIds.push(row.id);
     createdUserIds.push(user.id);
 
-    const returned = await getMailboxSecret(row.id);
+    const returned = (await getMailboxSecret(row.id)) as OAuthMailboxSecret;
     expect(refreshHits).toBe(1);
     expect(returned.accessToken).toBe(refreshed.access_token);
     expect(returned.refreshToken).toBe(refreshed.refresh_token);
@@ -244,7 +250,7 @@ describe("getMailboxSecret", () => {
     const persisted = await prisma.mailAccount.findUniqueOrThrow({ where: { id: row.id } });
     const plain = JSON.parse(
       decrypt(persisted.encryptedSecret, persisted.secretIv, persisted.secretTag),
-    ) as MailboxSecret;
+    ) as OAuthMailboxSecret;
     expect(plain.refreshToken).toBe(refreshed.refresh_token);
     expect(plain.refreshToken).not.toBe(secret.refreshToken);
   });
@@ -253,7 +259,8 @@ describe("getMailboxSecret", () => {
     const errBody = await loadGraphFixture<{ error: string }>("oauth.refresh.invalid_grant.json");
     server.use(http.post(MS_TOKEN_URL, () => HttpResponse.json(errBody, { status: 400 })));
 
-    const secret: MailboxSecret = {
+    const secret: OAuthMailboxSecret = {
+      kind: "oauth",
       accessToken: "EwA-STALE",
       refreshToken: "MCRT-REVOKED",
       expiresAt: Math.floor(Date.now() / 1000) - 60,
@@ -287,7 +294,8 @@ describe("getMailboxSecret", () => {
       ),
     );
 
-    const secret: MailboxSecret = {
+    const secret: OAuthMailboxSecret = {
+      kind: "oauth",
       accessToken: "ya29.STALE",
       refreshToken: "1//RT-PRESERVED",
       expiresAt: Math.floor(Date.now() / 1000) - 60,
@@ -297,7 +305,7 @@ describe("getMailboxSecret", () => {
     createdAccountIds.push(row.id);
     createdUserIds.push(user.id);
 
-    const returned = await getMailboxSecret(row.id);
+    const returned = (await getMailboxSecret(row.id)) as OAuthMailboxSecret;
     expect(returned.accessToken).toBe("ya29.NEW");
     expect(returned.refreshToken).toBe("1//RT-PRESERVED");
   });
@@ -308,7 +316,8 @@ describe("getMailboxSecret", () => {
     );
     server.use(http.post(GOOGLE_TOKEN_URL, () => HttpResponse.json(refreshed)));
 
-    const secret: MailboxSecret = {
+    const secret: OAuthMailboxSecret = {
+      kind: "oauth",
       accessToken: "ya29.STALE",
       refreshToken: "1//RT-OK",
       expiresAt: Math.floor(Date.now() / 1000) - 5,

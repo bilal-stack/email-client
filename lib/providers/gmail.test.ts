@@ -32,6 +32,7 @@ async function createAccount(): Promise<string> {
     data: { email: `gmail-${randomUUID()}@example.com` },
   });
   const secret: MailboxSecret = {
+    kind: "oauth",
     accessToken: "ya29.VALID",
     refreshToken: "1//RT",
     expiresAt: Math.floor(Date.now() / 1000) + 3600,
