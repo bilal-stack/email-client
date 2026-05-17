@@ -21,6 +21,7 @@ import type { CanonicalThread } from "@/lib/providers/types";
 import type { Prisma } from "@prisma/client";
 import {
   archiveThreads,
+  getLabelsForThreads,
   getThread,
   listAvailableLabels,
   listThreads,
@@ -948,5 +949,67 @@ describe("listAvailableLabels", () => {
     if (!result.ok) return;
     expect(result.data.labels).not.toContain("BSecret");
     expect(result.data.labels).toContain("AOnly");
+  });
+});
+
+// ── getLabelsForThreads ────────────────────────────────────────────────────
+
+describe("getLabelsForThreads", () => {
+  it("returns Unauthorized when there is no session", async () => {
+    authMock.mockResolvedValue(null as never);
+    const result = await getLabelsForThreads({
+      threadIds: ["c123456789012345678901234"],
+    });
+    expect(result).toEqual({ ok: false, error: "Unauthorized" });
+  });
+
+  it("Zod rejects an empty threadIds array", async () => {
+    const { userId } = await createUserWithAccount();
+    authMock.mockResolvedValue({ user: { id: userId } } as never);
+    const result = await getLabelsForThreads({ threadIds: [] });
+    expect(result).toEqual({ ok: false, error: "Invalid input" });
+  });
+
+  it("returns the deduped, sorted union of labels across the given threads", async () => {
+    const { userId, accountId } = await createUserWithAccount();
+    authMock.mockResolvedValue({ user: { id: userId } } as never);
+    const { threadId: a } = await createThread(accountId, {});
+    const { threadId: b } = await createThread(accountId, {});
+    await setThreadLabelsRaw(a, ["INBOX", "Work", "STARRED"]);
+    await setThreadLabelsRaw(b, ["INBOX", "Personal", "Work"]);
+
+    const result = await getLabelsForThreads({ threadIds: [a, b] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.labels).toEqual(["INBOX", "Personal", "STARRED", "Work"]);
+  });
+
+  it("silently drops thread ids the caller does not own (no info leak)", async () => {
+    const a = await createUserWithAccount();
+    const b = await createUserWithAccount();
+    const { threadId: aThread } = await createThread(a.accountId, {});
+    const { threadId: bThread } = await createThread(b.accountId, {});
+    await setThreadLabelsRaw(aThread, ["INBOX", "AOnly"]);
+    await setThreadLabelsRaw(bThread, ["INBOX", "BSecret"]);
+
+    authMock.mockResolvedValue({ user: { id: a.userId } } as never);
+    const result = await getLabelsForThreads({ threadIds: [aThread, bThread] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.labels).not.toContain("BSecret");
+    expect(result.data.labels).toEqual(["AOnly", "INBOX"]);
+  });
+
+  it("returns an empty list when no threads in the set are owned", async () => {
+    const a = await createUserWithAccount();
+    const b = await createUserWithAccount();
+    const { threadId: bThread } = await createThread(b.accountId, {});
+    await setThreadLabelsRaw(bThread, ["INBOX", "BSecret"]);
+
+    authMock.mockResolvedValue({ user: { id: a.userId } } as never);
+    const result = await getLabelsForThreads({ threadIds: [bThread] });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.data.labels).toEqual([]);
   });
 });

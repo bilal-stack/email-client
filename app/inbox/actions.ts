@@ -384,6 +384,40 @@ export async function setThreadLabels(
   return { ok: true, data: result };
 }
 
+const getLabelsForThreadsInput = z.object({ threadIds: idArray });
+
+/**
+ * Return the union of labels currently applied to the given (owned) threads.
+ * Used by the bulk labels popover so it can pre-check labels that are on at
+ * least one selected thread — without this seed, the diff against `checked`
+ * would only ever produce additions, and bulk-remove via the UI is impossible.
+ *
+ * Ownership-scoped via `account: { userId }`; an unowned thread id is silently
+ * dropped (no leak about whether the id exists).
+ */
+export async function getLabelsForThreads(
+  input: z.infer<typeof getLabelsForThreadsInput>,
+): Action<{ labels: string[] }> {
+  const session = await auth();
+  if (!session?.user?.id) return { ok: false, error: "Unauthorized" };
+  const parsed = getLabelsForThreadsInput.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Invalid input" };
+
+  const rows = await prisma.thread.findMany({
+    where: { id: { in: parsed.data.threadIds }, account: { userId: session.user.id } },
+    select: { labels: true },
+  });
+  const set = new Set<string>();
+  for (const r of rows) {
+    if (Array.isArray(r.labels)) {
+      for (const l of r.labels as unknown[]) {
+        if (typeof l === "string") set.add(l);
+      }
+    }
+  }
+  return { ok: true, data: { labels: [...set].sort() } };
+}
+
 const listLabelsInput = z.object({ accountId: z.string().cuid().optional() });
 
 /**

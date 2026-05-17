@@ -4,8 +4,14 @@
 // them check/uncheck across a set of threads, computes the add/remove diff
 // against the union of currently-applied labels, and applies via
 // `setThreadLabels`. Closes on success.
+//
+// `currentLabels` can be passed by the caller when it already has the data on
+// hand (e.g. a single-thread view that loaded the thread's labels). Otherwise
+// the popover lazy-fetches the union of labels across `threadIds` when it
+// opens — without that seed, the diff would only ever produce additions and
+// bulk-remove via the UI would be impossible.
 
-import { listAvailableLabels, setThreadLabels } from "@/app/inbox/actions";
+import { getLabelsForThreads, listAvailableLabels, setThreadLabels } from "@/app/inbox/actions";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
@@ -14,7 +20,11 @@ import { useEffect, useState, useTransition } from "react";
 
 interface LabelsPopoverProps {
   threadIds: string[];
-  /** Labels currently applied to ANY of the selected threads — used to seed checkbox state. */
+  /**
+   * Labels currently applied to ANY of the selected threads — used to seed
+   * checkbox state. If omitted, the popover fetches the union itself when it
+   * first opens.
+   */
   currentLabels?: string[];
   onApplied?: () => void;
   className?: string;
@@ -22,18 +32,20 @@ interface LabelsPopoverProps {
 
 export function LabelsPopover({
   threadIds,
-  currentLabels = [],
+  currentLabels,
   onApplied,
   className,
 }: LabelsPopoverProps) {
   const [open, setOpen] = useState(false);
   const [available, setAvailable] = useState<string[] | null>(null);
   const [loadingList, setLoadingList] = useState(false);
+  const [seedLabels, setSeedLabels] = useState<string[] | null>(currentLabels ?? null);
+  const [loadingSeed, setLoadingSeed] = useState(false);
   const [checked, setChecked] = useState<Set<string>>(new Set());
   const [error, setError] = useState<string | null>(null);
   const [isPending, startTransition] = useTransition();
 
-  // Lazy-fetch labels the first time the popover opens.
+  // Lazy-fetch the user's available labels the first time the popover opens.
   useEffect(() => {
     if (!open || available !== null || loadingList) return;
     setLoadingList(true);
@@ -45,10 +57,30 @@ export function LabelsPopover({
       .finally(() => setLoadingList(false));
   }, [open, available, loadingList]);
 
-  // Seed the checkbox state from current labels.
+  // If the caller didn't pass currentLabels, lazy-fetch the union across the
+  // selected threads when the popover opens. This is what makes bulk-remove
+  // possible: without a seed, every "applied" label would look unchecked and
+  // the diff would only ever produce additions.
   useEffect(() => {
-    if (open) setChecked(new Set(currentLabels));
-  }, [open, currentLabels]);
+    if (!open) return;
+    if (currentLabels !== undefined) {
+      setSeedLabels(currentLabels);
+      return;
+    }
+    if (seedLabels !== null || loadingSeed || threadIds.length === 0) return;
+    setLoadingSeed(true);
+    getLabelsForThreads({ threadIds })
+      .then((result) => {
+        if (result.ok) setSeedLabels(result.data.labels);
+        else setError(result.error);
+      })
+      .finally(() => setLoadingSeed(false));
+  }, [open, currentLabels, seedLabels, loadingSeed, threadIds]);
+
+  // Seed the checkbox state once we have the labels for the current selection.
+  useEffect(() => {
+    if (open && seedLabels !== null) setChecked(new Set(seedLabels));
+  }, [open, seedLabels]);
 
   const toggle = (label: string) => {
     setChecked((prev) => {
@@ -62,7 +94,7 @@ export function LabelsPopover({
   const apply = () => {
     if (threadIds.length === 0) return;
     setError(null);
-    const initial = new Set(currentLabels);
+    const initial = new Set(seedLabels ?? []);
     const add = [...checked].filter((l) => !initial.has(l));
     const remove = [...initial].filter((l) => !checked.has(l));
     if (add.length === 0 && remove.length === 0) {
@@ -100,7 +132,7 @@ export function LabelsPopover({
           aria-label="Apply labels"
           className="absolute right-0 z-20 mt-1 w-64 rounded-md border border-zinc-200 bg-white p-2 shadow-md"
         >
-          {loadingList ? (
+          {loadingList || loadingSeed ? (
             <div className="flex items-center gap-2 px-2 py-3 text-sm text-zinc-500">
               <Loader2 className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
               <span>Loading labels…</span>
