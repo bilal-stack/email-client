@@ -316,7 +316,9 @@ describe("markThreadRead", () => {
     const result = await markThreadRead({ threadId });
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toContain("reconnect");
+    // Canonical reconnect prompt — never the raw AuthError message (which a
+    // verbose adapter like Graph can fill with tenant detail).
+    expect(result.error).toBe("Please reconnect this account to continue.");
 
     const stillUnread = await prisma.message.count({
       where: { threadId, isUnread: true },

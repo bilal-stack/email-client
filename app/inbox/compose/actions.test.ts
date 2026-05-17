@@ -584,7 +584,11 @@ describe("sendDraft", () => {
     const result = await sendDraft(fd);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toBe("Reconnect Google account");
+    // Public error is the fixed canonical reconnect string — never the raw
+    // provider message (which Graph can fill with tenant detail).
+    expect(result.error).toBe("Please reconnect this account to continue.");
+    // Defensive: the raw provider phrase is NOT leaked.
+    expect(result.error).not.toContain("Google");
     expect(sendMessage).toHaveBeenCalledTimes(1);
 
     // CRITICAL: the user's work survives a send failure.
@@ -627,7 +631,9 @@ describe("sendDraft", () => {
     const result = await sendDraft(fd);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    expect(result.error).toBe("Rate limited, retry later");
+    // Canonical wait-and-retry phrase — the original retry-after value (30s)
+    // is intentionally not surfaced; the user just retries when they're ready.
+    expect(result.error).toBe("Too many requests. Please wait a moment and try again.");
 
     const survivor = await prisma.draft.findUnique({
       where: { id: created.data.draftId },

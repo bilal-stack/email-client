@@ -8,8 +8,7 @@ Items surfaced during testing or audit that we deliberately deferred. Address af
 
 - ~~**SSRF defense-in-depth on `syncCursor`.**~~ ✅ Resolved. `assertGraphCursorUrl` runs at the top of `syncDelta`'s incremental branch; rejects non-HTTPS / non-`graph.microsoft.com` URLs before the SDK call.
 - ~~**`sanitizeCause` includes the full Graph error envelope.**~~ ✅ Resolved. `sanitizeCause` now projects `response.data.error` down to `{ code, message }` only; tenant ids, request ids, and other envelope fields are dropped from the attached cause.
-- **`AuthError.message` widens via Graph.**
-  Pre-existing TODO below (`ProviderError.message returned verbatim…`) anticipated this. **Confirmed by graph-provider review**: Graph's `pickMessage` returns the raw Graph envelope message, which can carry tenant flavor on 401s. Action remains the same: swap `sendDraft`'s pass-through of `e.message` to a fixed allow-list of canonical user-facing strings. Now actually load-bearing rather than speculative.
+- ~~**`AuthError.message` widens via Graph.**~~ ✅ Resolved. New `lib/providers/canonical-errors.ts` maps every `ProviderError` subtype to a fixed user-facing string (`AuthError` → "Please reconnect this account to continue.", `RateLimitError` → "Too many requests. Please wait a moment and try again.", etc.). Both `sendDraft` (`app/inbox/compose/actions.ts`) and `markThreadRead` (`app/inbox/actions.ts`) funnel through it. Tests assert no raw provider phrasing (tenant ids, hostnames, retry-after seconds) leaks to the public `error` field.
 
 ## Graph-provider tests — closed
 

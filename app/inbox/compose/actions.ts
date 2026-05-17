@@ -13,6 +13,7 @@ import { validateAttachments } from "@/lib/compose/upload-guard";
 import { prisma } from "@/lib/db";
 import { sanitizeEmailHtml } from "@/lib/email-html/sanitize";
 import { getProviderForAccount } from "@/lib/providers";
+import { canonicalizeProviderError } from "@/lib/providers/canonical-errors";
 import { ProviderError } from "@/lib/providers/errors";
 import type { CanonicalAddress, SendDraft } from "@/lib/providers/types";
 import { z } from "zod";
@@ -241,10 +242,15 @@ export async function sendDraft(
   } catch (e) {
     // Draft row deliberately preserved on send failure — the user keeps their
     // work and can retry. See spec.md risk #10.
+    //
+    // Never echo `e.message` verbatim. The Graph adapter's `pickMessage` (and
+    // any future provider with a verbose error envelope) can carry tenant ids
+    // or request ids the user shouldn't see. `canonicalizeProviderError` maps
+    // each ProviderError subclass to a fixed action-flavored string.
     if (e instanceof ProviderError) {
-      return { ok: false, error: e.message };
+      return { ok: false, error: canonicalizeProviderError(e, "send") };
     }
-    return { ok: false, error: "Failed to send. Try again." };
+    return { ok: false, error: "Failed to send. Please try again." };
   }
 }
 

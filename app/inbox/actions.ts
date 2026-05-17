@@ -12,6 +12,7 @@ import {
 import { type ThreadRow, getThreadByIdForUser, listThreadsForUser } from "@/lib/db/inbox-queries";
 import { sanitizeEmailHtml } from "@/lib/email-html/sanitize";
 import { getProviderForAccount } from "@/lib/providers";
+import { canonicalizeProviderError } from "@/lib/providers/canonical-errors";
 import { z } from "zod";
 
 type Action<T> = Promise<{ ok: true; data: T } | { ok: false; error: string }>;
@@ -119,14 +120,11 @@ export async function markThreadRead(
       await provider.markRead(ids, true);
     }
   } catch (e) {
-    // Canonicalize: never bubble raw provider error strings (could contain
-    // URLs / path fragments). If it's an AuthError keep the public reason
-    // so the UI can prompt reconnect; otherwise a generic message.
-    const isAuth =
-      e instanceof Error &&
-      (e.constructor.name === "AuthError" || /reconnect required/i.test(e.message));
-    const msg = isAuth && e instanceof Error ? e.message : "Failed to mark as read";
-    return { ok: false, error: msg };
+    // Funnel every ProviderError subtype through the canonicalizer so we
+    // never echo Graph's raw envelope (which can carry tenant ids) or any
+    // other provider-flavored detail. AuthError → "Please reconnect this
+    // account" — the UI keys off that phrase to surface a reconnect button.
+    return { ok: false, error: canonicalizeProviderError(e, "markRead") };
   }
 
   const upd = await prisma.message.updateMany({
