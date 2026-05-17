@@ -1,5 +1,6 @@
 "use client";
 
+import { AIDraftPanel } from "@/app/inbox/[threadId]/_components/ai-draft-panel";
 import { type AccountOption, AccountPicker } from "@/app/inbox/_components/composer/account-picker";
 import { AttachmentList } from "@/app/inbox/_components/composer/attachment-list";
 import {
@@ -12,6 +13,25 @@ import { discardDraft, sendDraft, upsertDraft } from "@/app/inbox/compose/action
 import type { CanonicalAddress } from "@/lib/providers/types";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
+
+/**
+ * Convert plain text (as returned by the AI-draft tool) to minimal HTML
+ * suitable for TipTap. Paragraph per double-newline; <br/> per single
+ * newline within a paragraph. Empty paragraphs collapse to nothing.
+ */
+function plainTextToHtml(text: string): string {
+  return text
+    .split(/\n\n+/)
+    .map((para) => {
+      const escaped = para
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+      const withBreaks = escaped.replace(/\n/g, "<br/>");
+      return withBreaks ? `<p>${withBreaks}</p>` : "";
+    })
+    .join("");
+}
 
 export type DraftMode = "new" | "reply" | "reply-all" | "forward";
 
@@ -72,6 +92,17 @@ export function Composer({
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [sending, setSending] = useState(false);
   const [sendError, setSendError] = useState<string | null>(null);
+
+  // Bumps every time the AI panel writes the body — forces TipTap to
+  // re-mount with the new `initialContent` (the editor doesn't accept
+  // an imperative setContent prop in this codebase).
+  const [editorEpoch, setEditorEpoch] = useState(0);
+
+  // Snapshot of bodyHtml at the moment of the most recent AI pick. We treat
+  // the body as "manually edited" iff it differs from this snapshot AND is
+  // non-empty. Initial value `null` means "no AI pick yet" — in that case any
+  // typed content qualifies as manual.
+  const [lastAIBodyHtml, setLastAIBodyHtml] = useState<string | null>(null);
 
   const inFlightRef = useRef(false);
   const firstRunRef = useRef(true);
@@ -185,7 +216,27 @@ export function Composer({
             className="min-h-[44px] w-full rounded-md border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-900 focus:outline-none focus:ring-2 focus:ring-zinc-400"
           />
         </div>
-        <TipTapEditor initialContent={bodyHtml} onUpdate={setBodyHtml} />
+        {threadId && mode !== "new" ? (
+          <AIDraftPanel
+            threadId={threadId}
+            mode={mode}
+            accountId={accountId}
+            hasUnsavedManualEdits={
+              bodyHtml.trim().length > 0 && bodyHtml !== lastAIBodyHtml
+            }
+            onPick={(text) => {
+              const html = plainTextToHtml(text);
+              setBodyHtml(html);
+              setLastAIBodyHtml(html);
+              setEditorEpoch((n) => n + 1);
+            }}
+          />
+        ) : null}
+        <TipTapEditor
+          key={editorEpoch}
+          initialContent={bodyHtml}
+          onUpdate={setBodyHtml}
+        />
         <AttachmentList attachments={attachments} onChange={setAttachments} />
         {sendError ? (
           <p

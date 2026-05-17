@@ -61,4 +61,15 @@ describe("checkRateLimit", () => {
     // User B's first call should still pass.
     expect(checkRateLimit("userB", "summarize").ok).toBe(true);
   });
+
+  it("isolates per key — `ai-draft` and `summarize` are independent buckets for the same user", () => {
+    // Exhaust the "summarize" bucket for u1.
+    for (let i = 0; i < 30; i++) {
+      expect(checkRateLimit("u1", "summarize").ok).toBe(true);
+    }
+    // 31st `summarize` call would block; the first `ai-draft` call must pass
+    // (different bucket key), proving the two operations don't share quota.
+    expect(checkRateLimit("u1", "summarize").ok).toBe(false);
+    expect(checkRateLimit("u1", "ai-draft").ok).toBe(true);
+  });
 });
