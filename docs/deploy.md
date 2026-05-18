@@ -40,18 +40,42 @@ Save both strings — you'll paste them into Vercel in step 3.
 
 ---
 
-## Step 2 — Generate the Postgres migration locally
+## Step 2 — Switch Prisma to Postgres (one-time, on a deploy branch)
 
-This is a one-time step that regenerates the Prisma migration tree for Postgres. The SQLite migrations under `prisma/migrations/` were generated for dev and aren't compatible with Postgres.
+`prisma/schema.prisma` ships as **SQLite** on `main` so local dev stays
+frictionless (no Postgres install required to run tests / `npm dev`).
+The swap to Postgres is a one-time, **deploy-branch** change: do it once
+before your first prod deploy, and the change rides forever after on
+the deploy branch. Don't merge it back to `main` — `main` stays
+SQLite-friendly for local dev.
 
-In a local shell, **only for this step**, export the Neon URLs:
+Open a fresh branch off `main`:
+
+```bash
+git checkout -b deploy
+```
+
+**(a) Edit `prisma/schema.prisma`'s `datasource` block** to read:
+
+```prisma
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+```
+
+(That's two lines changed: `provider` flips, `directUrl` line added.
+The rest of the schema — every model — stays unchanged.)
+
+**(b) Export the Neon URLs locally** for the next prisma command:
 
 ```bash
 export DATABASE_URL="postgres://...?sslmode=require&pgbouncer=true"
 export DIRECT_URL="postgres://...?sslmode=require"
 ```
 
-Move the SQLite migrations aside and generate the Postgres ones:
+**(c) Move the SQLite migrations aside and regenerate against Postgres:**
 
 ```bash
 mv prisma/migrations prisma/migrations-sqlite-historical
@@ -59,19 +83,29 @@ mkdir prisma/migrations
 npx prisma migrate dev --name postgres_init
 ```
 
-Prisma connects to your Neon DB, generates `prisma/migrations/<timestamp>_postgres_init/migration.sql`, and applies it. The SQL creates every table (User, Account, Session, MailAccount, Thread, Message, Attachment, Draft, AISummary, PriorityScore) with Postgres types (BYTEA for `Bytes`, JSONB for `Json`).
+Prisma connects to your Neon DB, generates
+`prisma/migrations/<timestamp>_postgres_init/migration.sql`, and applies
+it. The SQL creates every table (User, Account, Session, MailAccount,
+Thread, Message, Attachment, Draft, AISummary, PriorityScore) with
+Postgres types (BYTEA for `Bytes`, JSONB for `Json`).
 
-Commit:
+**(d) Commit on the `deploy` branch:**
 
 ```bash
-git add prisma/migrations prisma/migrations-sqlite-historical
-git commit -m "deploy: regenerate Prisma migrations for Postgres"
-git push origin main
+git add prisma/ prisma/migrations-sqlite-historical
+git commit -m "deploy: switch Prisma to Postgres + regenerate migrations"
+git push -u origin deploy
 ```
 
-The SQLite-historical tree stays committed for documentation; Vercel doesn't touch it.
+The SQLite-historical tree stays committed for reference; Vercel
+doesn't touch it. Going forward, Vercel deploys from this `deploy`
+branch (or merge `deploy` into a long-lived `production` branch — pick
+whichever GitFlow shape you prefer). **`main` stays on SQLite** so
+local dev / tests keep working without any extra setup.
 
-> If you can't reach Neon from your machine (firewall, etc.), use a local Postgres container instead:
+> If you can't reach Neon from your machine (firewall, etc.), generate
+> the migration against a local Postgres container instead — the
+> resulting SQL is identical:
 > ```bash
 > docker run --rm -d -p 5432:5432 -e POSTGRES_PASSWORD=dev --name pg postgres:16
 > export DATABASE_URL="postgres://postgres:dev@localhost:5432/postgres?sslmode=disable"
@@ -79,7 +113,12 @@ The SQLite-historical tree stays committed for documentation; Vercel doesn't tou
 > npx prisma migrate dev --name postgres_init
 > docker stop pg
 > ```
-> The generated SQL is identical to what Neon would produce.
+
+> **Don't merge `deploy` back into `main`.** If you want to keep the
+> two in sync, cherry-pick non-deploy-specific changes from `main`
+> onto `deploy` (or rebase `deploy` onto `main` carefully —
+> `prisma/schema.prisma` is the only ongoing conflict, and it always
+> resolves in favor of the `deploy` version).
 
 ---
 
