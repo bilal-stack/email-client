@@ -344,4 +344,58 @@ describe("writeDelta", () => {
     expect(acc.syncCursor).toBe("NEXT");
     expect(acc.lastSyncedAt).not.toBeNull();
   });
+
+  // The `inbox/message.created` Inngest events fire in the sync FUNCTIONS
+  // (`gmail-sync.ts` / `graph-sync.ts`) AFTER the writer's transaction
+  // commits — gated on `newMessageDbIds.length > 0`. The writer's job is
+  // to return the right pair: the DB ids of just-inserted messages and a
+  // map from each to its thread's DB id. These two tests pin the shape of
+  // that contract so the callers' fan-out has the data it needs (or is
+  // safely gated off on an empty delta).
+  it("returns newMessageDbIds + messageIdToThreadDbId for newly-inserted messages, all pointing at the same thread", async () => {
+    const { accountId, userId } = await createAccount();
+    const delta: DeltaResult = {
+      newMessages: [
+        buildMessage({ id: "m-a", threadId: "thr-new", accountId }),
+        buildMessage({ id: "m-b", threadId: "thr-new", accountId }),
+        buildMessage({ id: "m-c", threadId: "thr-new", accountId }),
+      ],
+      changedMessages: [],
+      deletedIds: [],
+      nextCursor: "C1",
+    };
+
+    const result = await prisma.$transaction((tx) =>
+      writeDelta({ account: { id: accountId, userId }, delta, tx }),
+    );
+
+    expect(result.newMessageDbIds).toHaveLength(3);
+    expect(result.messageIdToThreadDbId.size).toBe(3);
+
+    const newThread = await prisma.thread.findUniqueOrThrow({
+      where: {
+        accountId_providerThreadId: { accountId, providerThreadId: "thr-new" },
+      },
+    });
+    for (const messageDbId of result.newMessageDbIds) {
+      expect(result.messageIdToThreadDbId.get(messageDbId)).toBe(newThread.id);
+    }
+  });
+
+  it("returns empty newMessageDbIds + messageIdToThreadDbId on an empty delta — the caller's `inngest.send` is gated on this length", async () => {
+    const { accountId, userId } = await createAccount();
+    const delta: DeltaResult = {
+      newMessages: [],
+      changedMessages: [],
+      deletedIds: [],
+      nextCursor: "C1",
+    };
+
+    const result = await prisma.$transaction((tx) =>
+      writeDelta({ account: { id: accountId, userId }, delta, tx }),
+    );
+
+    expect(result.newMessageDbIds).toEqual([]);
+    expect(result.messageIdToThreadDbId.size).toBe(0);
+  });
 });

@@ -72,4 +72,26 @@ describe("checkRateLimit", () => {
     expect(checkRateLimit("u1", "summarize").ok).toBe(false);
     expect(checkRateLimit("u1", "ai-draft").ok).toBe(true);
   });
+
+  it("isolates per key across all three AI keys — summarize / ai-draft / prioritize each hold their own quota", () => {
+    // Each of the three keys can spend its full 30 in the window without
+    // affecting the others. Adding `prioritize` here pins the third bucket
+    // alongside the two existing ones — a regression where any pair shared
+    // a counter would block one of these three arms early.
+    for (let i = 0; i < 30; i++) {
+      expect(checkRateLimit("user1", "summarize").ok).toBe(true);
+    }
+    for (let i = 0; i < 30; i++) {
+      expect(checkRateLimit("user1", "ai-draft").ok).toBe(true);
+    }
+    for (let i = 0; i < 30; i++) {
+      expect(checkRateLimit("user1", "prioritize").ok).toBe(true);
+    }
+
+    // The 31st `summarize` is blocked, but the other two keys' first call
+    // after the burst still passes — each holds its own quota.
+    expect(checkRateLimit("user1", "summarize").ok).toBe(false);
+    expect(checkRateLimit("user1", "ai-draft").ok).toBe(false);
+    expect(checkRateLimit("user1", "prioritize").ok).toBe(false);
+  });
 });

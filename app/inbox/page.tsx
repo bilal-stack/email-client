@@ -1,13 +1,14 @@
 import { AccountSwitcher } from "@/app/inbox/_components/account-switcher";
+import { SortToggle } from "@/app/inbox/_components/sort-toggle";
 import { ThreadList } from "@/app/inbox/_components/thread-list";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { auth } from "@/lib/auth";
 import { prisma } from "@/lib/db";
-import { listThreadsForUser } from "@/lib/db/inbox-queries";
+import { type InboxSort, listThreadsForUser } from "@/lib/db/inbox-queries";
 import Link from "next/link";
 
 interface InboxPageProps {
-  searchParams: Promise<{ account?: string }>;
+  searchParams: Promise<{ account?: string; sort?: string }>;
 }
 
 export default async function InboxPage({ searchParams }: InboxPageProps) {
@@ -31,8 +32,9 @@ export default async function InboxPage({ searchParams }: InboxPageProps) {
     );
   }
   const userId = session.user.id;
-  const { account: accountParam } = await searchParams;
+  const { account: accountParam, sort: sortParam } = await searchParams;
   const activeAccountId = accountParam ?? null;
+  const sort: InboxSort = sortParam === "time" ? "time" : "priority";
 
   const accounts = await prisma.mailAccount.findMany({
     where: { userId },
@@ -62,16 +64,20 @@ export default async function InboxPage({ searchParams }: InboxPageProps) {
 
   const initial = await listThreadsForUser(userId, {
     ...(activeAccountId ? { accountId: activeAccountId } : {}),
+    sort,
   });
 
   return (
     <div className="grid h-full grid-cols-1 md:grid-cols-[minmax(320px,400px)_1fr]">
       <section className="flex min-h-[60vh] flex-col border-zinc-200 md:border-r">
-        <div className="border-b border-zinc-200 bg-white p-4">
+        <div className="space-y-3 border-b border-zinc-200 bg-white p-4">
           <AccountSwitcher accounts={accounts} active={activeAccountId} />
+          <div className="flex justify-stretch sm:justify-end">
+            <SortToggle />
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto">
-          <ThreadList accountId={activeAccountId} initial={initial} />
+          <ThreadList accountId={activeAccountId} initial={initial} sort={sort} />
         </div>
       </section>
       <section className="hidden items-center justify-center p-12 text-center md:flex">

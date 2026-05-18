@@ -64,6 +64,33 @@ export const gmailSyncDelta = inngest.createFunction(
           const err = e as { name?: string; message?: string } | undefined;
           console.warn("inbox-events emit failed", { name: err?.name, message: err?.message });
         }
+
+        // Fan out one `inbox/message.created` per newly-inserted message so
+        // the prioritizer (`functions/prioritize-message.ts`) can score it.
+        // Best-effort — if Inngest enqueue fails, the DB commit already
+        // succeeded and the user sees the message in the inbox; the chip
+        // simply stays unscored.
+        try {
+          if (touched.newMessageDbIds.length > 0) {
+            await inngest.send(
+              touched.newMessageDbIds.map((messageId) => ({
+                name: "inbox/message.created",
+                data: {
+                  messageId,
+                  threadId: touched.messageIdToThreadDbId.get(messageId)!,
+                  accountId: account.id,
+                  userId: account.userId,
+                },
+              })),
+            );
+          }
+        } catch (e) {
+          const err = e as { name?: string; message?: string } | undefined;
+          console.warn("inbox/message.created emit failed", {
+            name: err?.name,
+            message: err?.message,
+          });
+        }
       });
     }
   },

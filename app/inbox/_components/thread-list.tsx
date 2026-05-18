@@ -16,13 +16,22 @@ interface ThreadListProps {
   accountId: string | null;
   initial: { threads: ThreadRow[]; nextCursor: string | null };
   selectedThreadId?: string | null;
+  sort?: "priority" | "time";
 }
 
-export function ThreadList({ accountId, initial, selectedThreadId }: ThreadListProps) {
+export function ThreadList({
+  accountId,
+  initial,
+  selectedThreadId,
+  sort = "priority",
+}: ThreadListProps) {
   const query = useQuery({
-    queryKey: queryKeys.inbox(accountId),
+    queryKey: queryKeys.inbox(accountId, sort),
     queryFn: async () => {
-      const res = await listThreads(accountId ? { accountId } : {});
+      const res = await listThreads({
+        ...(accountId ? { accountId } : {}),
+        sort,
+      });
       if (!res.ok) throw new Error(res.error);
       return res.data;
     },

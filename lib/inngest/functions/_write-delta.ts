@@ -76,6 +76,19 @@ function aggregateThreads(messages: CanonicalMessage[]): Map<string, ThreadAggre
 export interface WriteDeltaResult {
   /** DB ids of every thread the run upserted (created or updated). */
   threadIds: string[];
+  /**
+   * DB ids of `Message` rows newly inserted in this commit. Empty on a
+   * replay-only delta (every candidate row already existed by
+   * `providerMessageId`). Callers use this to fan out
+   * `inbox/message.created` Inngest events after the transaction commits.
+   */
+  newMessageDbIds: string[];
+  /**
+   * Maps each id in `newMessageDbIds` to its parent thread DB id. Lookup
+   * used by the post-commit Inngest fan-out so each event carries the
+   * thread id without a second DB round-trip.
+   */
+  messageIdToThreadDbId: Map<string, string>;
 }
 
 export async function writeDelta(params: {
@@ -125,6 +138,10 @@ export async function writeDelta(params: {
   // ── 2. createMany messages (filter-existing handles replays) ──
   // SQLite doesn't support `createMany({ skipDuplicates: true })`, so
   // we filter out already-inserted rows by `providerMessageId` first.
+  // Tracks the providerMessageIds of rows newly inserted in this commit —
+  // step 7 resolves these to DB ids for the Inngest fan-out return value.
+  const newProviderMessageIds: string[] = [];
+  const providerMessageIdToProviderThreadId = new Map<string, string>();
   if (delta.newMessages.length > 0) {
     const candidateRows = delta.newMessages
       .map((m) => {
@@ -163,6 +180,10 @@ export async function writeDelta(params: {
       const newRows = candidateRows.filter((r) => !existingIds.has(r.providerMessageId));
       if (newRows.length > 0) {
         await tx.message.createMany({ data: newRows });
+        for (const r of newRows) {
+          newProviderMessageIds.push(r.providerMessageId);
+          providerMessageIdToProviderThreadId.set(r.providerMessageId, r.providerThreadId);
+        }
       }
     }
   }
@@ -267,5 +288,37 @@ export async function writeDelta(params: {
     },
   });
 
-  return { threadIds: [...providerThreadIdToDbId.values()] };
+  // ── 7. Resolve newly-inserted message DB ids ─────────────────
+  // The Inngest fan-out (`inbox/message.created` per new message) lives
+  // OUTSIDE this transaction in the caller. We collect (messageDbId,
+  // threadDbId) pairs here so the caller doesn't need a second DB read.
+  // `createMany` doesn't return rows, hence the post-insert findMany.
+  const newMessageDbIds: string[] = [];
+  const messageIdToThreadDbId = new Map<string, string>();
+  if (newProviderMessageIds.length > 0) {
+    const inserted = await tx.message.findMany({
+      where: {
+        accountId: account.id,
+        providerMessageId: { in: newProviderMessageIds },
+      },
+      select: { id: true, providerMessageId: true },
+    });
+    for (const row of inserted) {
+      const providerThreadId = providerMessageIdToProviderThreadId.get(
+        row.providerMessageId,
+      );
+      const threadDbId = providerThreadId
+        ? providerThreadIdToDbId.get(providerThreadId)
+        : undefined;
+      if (!threadDbId) continue;
+      newMessageDbIds.push(row.id);
+      messageIdToThreadDbId.set(row.id, threadDbId);
+    }
+  }
+
+  return {
+    threadIds: [...providerThreadIdToDbId.values()],
+    newMessageDbIds,
+    messageIdToThreadDbId,
+  };
 }

@@ -21,6 +21,7 @@ const listThreadsInput = z.object({
   accountId: z.string().cuid().optional(),
   cursor: z.string().cuid().optional(),
   limit: z.number().int().min(1).max(100).optional(),
+  sort: z.enum(["priority", "time"]).optional(),
 });
 
 export async function listThreads(input: z.infer<typeof listThreadsInput>): Action<{
@@ -154,6 +155,13 @@ export interface SearchResultRow {
   participantCount: number;
   unreadCount: number;
   lastMessageAt: Date;
+  // Search results bypass the prioritizer (the search call hits the provider
+  // directly, not the local PriorityScore-aware listThreads path). The chip
+  // slots stay null so the row renderer falls back to the "not yet scored"
+  // placeholder — same shape as the inbox row would carry pre-score.
+  priority: number | null;
+  reason: string | null;
+  riskFlag: "phish" | "promo" | "ok" | null;
 }
 
 /**
@@ -196,6 +204,9 @@ export async function searchThreads(
           participantCount: t.participants.length,
           unreadCount: t.unreadCount,
           lastMessageAt: t.lastMessageAt,
+          priority: null,
+          reason: null,
+          riskFlag: null,
         });
       }
     }),

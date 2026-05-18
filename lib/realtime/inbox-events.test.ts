@@ -1,6 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
-import { type SyncEvent, emitInboxSyncEvent, subscribeInboxSyncEvents } from "./inbox-events";
+import {
+  type InboxSseEvent,
+  type SyncEvent,
+  emitInboxSyncEvent,
+  subscribeInboxSyncEvents,
+} from "./inbox-events";
 
 function makeEvent(overrides: Partial<SyncEvent> = {}): SyncEvent {
   return {
@@ -8,6 +13,13 @@ function makeEvent(overrides: Partial<SyncEvent> = {}): SyncEvent {
     threadIds: overrides.threadIds ?? ["t-1", "t-2"],
     at: overrides.at ?? Date.now(),
   };
+}
+
+// Subscribers receive the wrapped discriminated-union payload, not the bare
+// `SyncEvent` the producer was given. Helper centralizes the wrap so the
+// assertions stay readable.
+function wrapAsSync(evt: SyncEvent): Extract<InboxSseEvent, { type: "inbox-sync" }> {
+  return { type: "inbox-sync", ...evt };
 }
 
 describe("inbox-events — emit / subscribe", () => {
@@ -19,7 +31,7 @@ describe("inbox-events — emit / subscribe", () => {
     emitInboxSyncEvent("userA", evt);
 
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener).toHaveBeenCalledWith(evt);
+    expect(listener).toHaveBeenCalledWith(wrapAsSync(evt));
     unsubscribe();
   });
 
@@ -58,8 +70,8 @@ describe("inbox-events — emit / subscribe", () => {
     const evt = makeEvent({ accountId: "acc-D" });
     emitInboxSyncEvent("userD", evt);
 
-    expect(l1).toHaveBeenCalledWith(evt);
-    expect(l2).toHaveBeenCalledWith(evt);
+    expect(l1).toHaveBeenCalledWith(wrapAsSync(evt));
+    expect(l2).toHaveBeenCalledWith(wrapAsSync(evt));
     u1();
     u2();
   });
@@ -77,7 +89,7 @@ describe("inbox-events — emit / subscribe", () => {
     b.emitInboxSyncEvent("userHMR", evt);
 
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener).toHaveBeenCalledWith(evt);
+    expect(listener).toHaveBeenCalledWith(wrapAsSync(evt));
     unsubscribe();
   });
 });

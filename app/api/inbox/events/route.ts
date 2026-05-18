@@ -1,5 +1,8 @@
 import { auth } from "@/lib/auth";
-import { type SyncEvent, subscribeInboxSyncEvents } from "@/lib/realtime/inbox-events";
+import {
+  type InboxSseEvent,
+  subscribeInboxSyncEvents,
+} from "@/lib/realtime/inbox-events";
 
 export const dynamic = "force-dynamic";
 
@@ -21,7 +24,7 @@ export async function GET(request: Request) {
         }
       };
 
-      const onEvent = (e: SyncEvent) => {
+      const onEvent = (e: InboxSseEvent) => {
         safeEnqueue(encoder.encode(`data: ${JSON.stringify(e)}\n\n`));
       };
       const unsubscribe = subscribeInboxSyncEvents(userId, onEvent);

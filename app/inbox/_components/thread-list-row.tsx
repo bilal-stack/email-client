@@ -6,7 +6,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import type { ThreadRow } from "@/lib/db/inbox-queries";
 import { useInboxSelection } from "@/lib/inbox/selection-store";
 import { cn } from "@/lib/utils";
-import { Archive, Trash2 } from "lucide-react";
+import { AlertTriangle, Archive, Tag, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTransition } from "react";
 
@@ -112,15 +112,49 @@ export function ThreadListRow({
           </span>
           <span className="shrink-0 text-xs text-zinc-500">{formatTime(row.lastMessageAt)}</span>
         </div>
-        <p
-          className={cn(
-            "truncate text-sm",
-            isUnread ? "text-zinc-900" : "text-zinc-700",
-            isUnread && "font-medium",
+        <div className="flex flex-wrap items-center gap-y-1">
+          <p
+            className={cn(
+              "min-w-0 max-w-full truncate text-sm",
+              isUnread ? "text-zinc-900" : "text-zinc-700",
+              isUnread && "font-medium",
+            )}
+          >
+            {row.subject || row.snippet || "(no subject)"}
+          </p>
+          {row.reason !== null ? (
+            <span className="ml-2 inline-block max-w-[18ch] truncate rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-700">
+              {row.reason}
+            </span>
+          ) : (
+            <span
+              className="ml-2 inline-block w-5 text-center text-xs text-zinc-300"
+              aria-hidden="true"
+            >
+              …
+            </span>
           )}
-        >
-          {row.subject || row.snippet || "(no subject)"}
-        </p>
+          {row.riskFlag !== null && row.riskFlag !== "ok" ? (
+            <span
+              aria-label={
+                row.riskFlag === "phish" ? "Risk: phishing" : "Risk: promotional"
+              }
+              className={cn(
+                "ml-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs",
+                row.riskFlag === "phish"
+                  ? "bg-red-50 text-red-700"
+                  : "bg-amber-50 text-amber-800",
+              )}
+            >
+              {row.riskFlag === "phish" ? (
+                <AlertTriangle className="h-3 w-3" aria-hidden="true" />
+              ) : (
+                <Tag className="h-3 w-3" aria-hidden="true" />
+              )}
+              {row.riskFlag === "phish" ? "phish" : "promo"}
+            </span>
+          ) : null}
+        </div>
         {row.subject && row.snippet ? (
           <p className="truncate text-xs text-zinc-500">{row.snippet}</p>
         ) : null}

@@ -69,7 +69,9 @@ describe("GET /api/inbox/events", () => {
     const chunk = await readNextNonHeartbeatChunk(reader);
     expect(chunk).toContain("data: ");
     const payload = JSON.parse(chunk.slice("data: ".length).trim());
-    expect(payload).toEqual(evt);
+    // The bus wraps the producer's SyncEvent with `type: "inbox-sync"` for the
+    // discriminated-union SSE payload — the route forwards verbatim.
+    expect(payload).toEqual({ type: "inbox-sync", ...evt });
 
     await reader.cancel();
   });

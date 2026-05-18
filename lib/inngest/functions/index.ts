@@ -4,5 +4,11 @@
 import { gmailSyncDelta } from "./gmail-sync";
 import { graphSyncDelta } from "./graph-sync";
 import { imapSyncPoll } from "./imap-sync";
+import { prioritizeMessageFn } from "./prioritize-message";
 
-export const inngestFunctions = [gmailSyncDelta, graphSyncDelta, imapSyncPoll];
+export const inngestFunctions = [
+  gmailSyncDelta,
+  graphSyncDelta,
+  imapSyncPoll,
+  prioritizeMessageFn,
+];
