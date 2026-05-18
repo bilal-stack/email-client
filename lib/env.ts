@@ -52,6 +52,12 @@ const schema = z.object({
   // key; the AI Server Actions will check at call time.
   ANTHROPIC_API_KEY: z.string().optional(),
 
+  // Used by `prisma migrate` against Neon's un-pooled connection; runtime uses DATABASE_URL.
+  DIRECT_URL: z.string().optional(),
+
+  // Auth.js derives from VERCEL_URL when absent; explicit on prod avoids cookie / OAuth-redirect surprises.
+  NEXTAUTH_URL: z.string().url().optional(),
+
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
 });
 

@@ -2,8 +2,9 @@
 // AISummary lands in ai-summaries spec. PriorityScore lands in ai-prioritization spec.
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 generator client {

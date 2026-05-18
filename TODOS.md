@@ -40,6 +40,27 @@ All cases from `.agent-os/specs/2026-05-17-graph-provider/sub-specs/tests.md` ar
 - ~~**Pin minimum TLS version on IMAP/SMTP clients.**~~ ✅ Resolved. `tls: { minVersion: "TLSv1.2" }` passed to imapflow in both call sites (`lib/auth/index.ts` and `lib/providers/imap.ts`) and to nodemailer's `createTransport`.
 - ~~**`NODE_ENV` read at module-load time in `imap-host-guard.ts`.**~~ ✅ Documented + handled. `lib/auth/imap-host-guard.test.ts` uses `vi.stubEnv("NODE_ENV", "production")` + `vi.resetModules()` before dynamic import per dev/prod case.
 
+## Deploy-vercel follow-ups (open at submission time)
+
+- **Local test runner broke after the Prisma provider swap.**
+  `npm test:run` calls `prisma migrate deploy` against `file:./test.db`,
+  but `schema.prisma` now declares `provider = "postgresql"`. The mismatch
+  fails the global setup. **Tests don't run locally until the user follows
+  step 2 of `docs/deploy.md`** (generate Postgres migrations) AND adopts
+  one of the two local-dev paths the runbook describes:
+  (a) Docker Postgres locally with `DATABASE_URL` pointing at it, or
+  (b) per-environment Prisma schema files (`schema.dev.prisma` for SQLite,
+  `schema.prisma` for Postgres). The spec recommends (a) for parity with
+  prod. This isn't a code bug — it's the cost of the production migration.
+
+- **The Postgres migration itself hasn't been generated.**
+  `prisma/migrations/` still holds the SQLite migrations. The user runs
+  `mv prisma/migrations prisma/migrations-sqlite-historical && mkdir
+  prisma/migrations && npx prisma migrate dev --name postgres_init` once
+  they have Neon credentials (or a local Postgres). Documented in
+  `docs/deploy.md` step 2. Until that's done, the Vercel build will fail
+  on `prisma migrate deploy` because no Postgres migrations exist to apply.
+
 ## PWA offline follow-ups
 
 - **Sign-out should call `clearQueued()` on the offline draft queue.**

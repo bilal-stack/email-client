@@ -5,16 +5,14 @@ AI-first universal email client. Mobile-ready PWA. Gmail, Office 365, and IMAP (
 Built as a Claude Code agentic-workflow deliverable.
 
 ## Deliverables — pointers
-- Live Vercel URL — *added near the end of the build (final spec: `deploy-vercel`)*
+- Live Vercel URL — *added once the project is deployed; see [docs/deploy.md](./docs/deploy.md)*
 - [CLAUDE.md](./CLAUDE.md) — conventions, tech stack, no-go list
 - [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) — one-page architecture doc
 - [docs/AGENTS_SKILLS_HOOKS.md](./docs/AGENTS_SKILLS_HOOKS.md) — list of agents, skills, hooks, plugins
 - [docs/WORKFLOW.md](./docs/WORKFLOW.md) — workflow writeup
+- [docs/deploy.md](./docs/deploy.md) — Vercel + Neon + Inngest production runbook
 - [.agent-os/product/](./.agent-os/product) — mission, roadmap, tech-stack, decisions (Agent OS)
 - [.agent-os/specs/](./.agent-os/specs) — feature specs, the source of truth (Agent OS)
-
-## Status
-Planning phase — docs and Agent OS scaffolding in place; code scaffolding pending. The first spec ([`.agent-os/specs/2026-05-14-foundation/`](./.agent-os/specs/2026-05-14-foundation)) is what lands first.
 
 ## Quick start (once scaffolded)
 ```bash
@@ -33,6 +31,9 @@ npm inngest:dev
 - **Yahoo/AOL app passwords** — only needed when testing IMAP (spec 006)
 
 See `CLAUDE.md` for the full `.env.local` template.
+
+## Deploying to production
+See [**docs/deploy.md**](./docs/deploy.md) — step-by-step runbook for Vercel + Neon Postgres + Inngest Cloud, OAuth redirect URI updates, and the post-deploy smoke test.
 
 ## How this codebase is built
 Every feature follows a spec → review → build → test → review → merge loop, with specialized Claude Code subagents owning each step. See [docs/WORKFLOW.md](./docs/WORKFLOW.md).
