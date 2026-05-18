@@ -3,7 +3,7 @@
 import { Button } from "@/components/ui/button";
 import { Loader2 } from "lucide-react";
 
-export type SaveStatus = "idle" | "saving" | "saved" | "error";
+export type SaveStatus = "idle" | "saving" | "saved" | "error" | "queued-offline";
 
 interface ComposeActionBarProps {
   saveStatus: SaveStatus;
@@ -22,9 +22,17 @@ function saveLabel(s: SaveStatus): string {
       return "Saved";
     case "error":
       return "Save failed";
+    case "queued-offline":
+      return "Queued offline";
     case "idle":
       return "";
   }
+}
+
+function saveClassName(s: SaveStatus): string {
+  if (s === "error") return "text-xs text-red-600";
+  if (s === "queued-offline") return "text-xs text-amber-600";
+  return "text-xs text-zinc-500";
 }
 
 export function ComposeActionBar({
@@ -50,10 +58,7 @@ export function ComposeActionBar({
       <Button type="button" variant="ghost" onClick={onDiscard} disabled={!canDiscard || sending}>
         Discard
       </Button>
-      <span
-        className={saveStatus === "error" ? "text-xs text-red-600" : "text-xs text-zinc-500"}
-        aria-live="polite"
-      >
+      <span className={saveClassName(saveStatus)} aria-live="polite">
         {saveLabel(saveStatus)}
       </span>
     </div>

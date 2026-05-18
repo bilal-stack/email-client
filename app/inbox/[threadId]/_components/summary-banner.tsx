@@ -65,6 +65,17 @@ export function SummaryBanner({ threadId }: SummaryBannerProps) {
   }
 
   if (query.isError) {
+    // Offline degrades the banner to a single muted line — retrying while
+    // disconnected would just hammer the network and surface a confusing
+    // error twice. The `online` event already triggers a refetch via the
+    // standard window listener TanStack Query installs by default.
+    if (typeof navigator !== "undefined" && navigator.onLine === false) {
+      return (
+        <div className="border-b border-zinc-200 bg-zinc-50 px-4 py-3 text-xs text-zinc-500 sm:px-6">
+          Summary unavailable offline
+        </div>
+      );
+    }
     const message = query.error instanceof Error ? query.error.message : "Summary failed";
     return (
       <div

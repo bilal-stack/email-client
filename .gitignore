@@ -41,3 +41,11 @@ prisma/test.db*
 
 # turbo
 .turbo
+
+# serwist / PWA service worker build outputs
+public/sw.js
+public/sw.js.map
+public/swe-worker-*.js
+public/swe-worker-*.js.map
+public/workbox-*.js
+public/workbox-*.js.map

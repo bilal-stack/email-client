@@ -1,3 +1,5 @@
+import { InstallReplayListener } from "@/components/install-replay-listener";
+import { RegisterServiceWorker } from "@/components/register-sw";
 import type { Metadata, Viewport } from "next";
 import NextTopLoader from "nextjs-toploader";
 import "./globals.css";
@@ -24,6 +26,8 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           showSpinner={false}
           shadow="0 0 6px rgba(24,24,27,0.4)"
         />
+        <RegisterServiceWorker />
+        <InstallReplayListener />
         {children}
       </body>
     </html>

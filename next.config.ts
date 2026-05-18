@@ -1,6 +1,15 @@
+import withSerwistInit from "@serwist/next";
 import type { NextConfig } from "next";
 
-const config: NextConfig = {
+const withSerwist = withSerwistInit({
+  swSrc: "app/sw.ts",
+  swDest: "public/sw.js",
+  disable: process.env.NODE_ENV === "development",
+  cacheOnNavigation: true,
+  reloadOnOnline: true,
+});
+
+const baseConfig: NextConfig = {
   reactStrictMode: true,
   typedRoutes: true,
   async headers() {
@@ -18,4 +27,4 @@ const config: NextConfig = {
   },
 };
 
-export default config;
+export default withSerwist(baseConfig);

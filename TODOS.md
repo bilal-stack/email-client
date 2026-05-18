@@ -40,6 +40,11 @@ All cases from `.agent-os/specs/2026-05-17-graph-provider/sub-specs/tests.md` ar
 - ~~**Pin minimum TLS version on IMAP/SMTP clients.**~~ ✅ Resolved. `tls: { minVersion: "TLSv1.2" }` passed to imapflow in both call sites (`lib/auth/index.ts` and `lib/providers/imap.ts`) and to nodemailer's `createTransport`.
 - ~~**`NODE_ENV` read at module-load time in `imap-host-guard.ts`.**~~ ✅ Documented + handled. `lib/auth/imap-host-guard.test.ts` uses `vi.stubEnv("NODE_ENV", "production")` + `vi.resetModules()` before dynamic import per dev/prod case.
 
+## PWA offline follow-ups
+
+- **Sign-out should call `clearQueued()` on the offline draft queue.**
+  `lib/offline/draft-queue.ts` exposes `clearQueued()`. The Auth.js v5 sign-out flow currently runs through `signOut()` directly; no client-side hook fires `clearQueued()` first. Add a thin client wrapper around the sign-out button that runs `await clearQueued()` before invoking `signOut()` so a subsequent user on the same device doesn't inherit drafts. Out of pwa-offline lane (sign-out lives in `app/(auth)/`).
+
 ## IMAP-provider follow-ups
 
 - **`changedMessages` / `deletedIds` always empty in `ImapProvider.syncDelta`.**

@@ -10,6 +10,7 @@ import {
 import { RecipientsInput } from "@/app/inbox/_components/composer/recipients-input";
 import { TipTapEditor } from "@/app/inbox/_components/composer/tiptap-editor";
 import { discardDraft, sendDraft, upsertDraft } from "@/app/inbox/compose/actions";
+import { queueDraft } from "@/lib/offline/draft-queue";
 import type { CanonicalAddress } from "@/lib/providers/types";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useRef, useState } from "react";
@@ -106,6 +107,10 @@ export function Composer({
 
   const inFlightRef = useRef(false);
   const firstRunRef = useRef(true);
+  // Tracks the IDB-local id of the most recent queued offline autosave so
+  // consecutive offline saves update the same row instead of accumulating
+  // duplicates. Cleared when an online save succeeds.
+  const queuedIdRef = useRef<string | null>(null);
 
   const inReplyTo = parentMessage?.inReplyTo ?? [];
   const references = parentMessage?.references ?? [];
@@ -124,6 +129,36 @@ export function Composer({
     const t = setTimeout(async () => {
       if (inFlightRef.current) return;
       inFlightRef.current = true;
+
+      // Offline path: skip the Server Action and stash in IndexedDB. The
+      // replay listener in the root layout drains the queue on the next
+      // `online` event, after which the regular online autosave below
+      // takes over authoritatively.
+      if (typeof navigator !== "undefined" && !navigator.onLine) {
+        try {
+          const id = await queueDraft({
+            id: queuedIdRef.current ?? undefined,
+            accountId,
+            threadId: threadId ?? null,
+            mode,
+            to,
+            cc,
+            bcc,
+            subject,
+            bodyHtml,
+            inReplyTo,
+            references,
+          });
+          queuedIdRef.current = id;
+          setSaveStatus("queued-offline");
+        } catch {
+          setSaveStatus("error");
+        } finally {
+          inFlightRef.current = false;
+        }
+        return;
+      }
+
       setSaveStatus("saving");
       const result = await upsertDraft({
         ...(draftId ? { draftId } : {}),
@@ -142,6 +177,10 @@ export function Composer({
       if (result.ok) {
         setDraftId(result.data.draftId);
         setSaveStatus("saved");
+        // A successful online save makes the queued offline copy obsolete —
+        // the replay listener removes the IDB entry separately. We just
+        // forget our local reference.
+        queuedIdRef.current = null;
       } else {
         setSaveStatus("error");
       }
