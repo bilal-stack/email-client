@@ -1,0 +1,59 @@
+# Deploy to Vercel
+
+## Goal
+Ship the final spec: get the app running on **Vercel** with **Neon Postgres**, **Inngest Cloud**, and OAuth redirect URIs wired for the deployed domain. The development DATABASE_URL is the only Prisma-side surface that changes (one swap from `file:./dev.db` to `postgres://...@neon.tech/...`). Everything else is environment configuration + Vercel project setup + cron/event registration with Inngest cloud. After this spec lands, an eval reviewer can visit a URL like `https://email-client.vercel.app`, sign in with Google / Microsoft / IMAP, and watch the full stack work end-to-end. No application code changes that meaningfully affect feature behavior — this is a configuration + deployment spec, and the small code changes that do happen (binary `Bytes`-column compatibility check, an explicit `directUrl` on the Prisma datasource, the `vercel.json` if needed) are documented in detail.
+
+## User stories
+1. **As an eval reviewer**, I open the deployed URL and can sign in with my own Google account, see my real inbox arrive within ~60 seconds of cron-driven sync, open a thread, see the AI summary banner render, click "AI draft", and send a reply that lands in the recipient's mailbox.
+2. **As an eval reviewer**, I can install the deployed PWA to my mobile home screen and use it offline (the cached inbox + offline draft queue from `pwa-offline` work over HTTPS in production).
+3. **As an eval reviewer**, I see in the project's `README.md` / a deploy doc a clear list of every env var and where to obtain it.
+4. **As a developer onboarding next**, the `npm run db:migrate` / `npm run db:migrate:deploy` distinction is clear: `dev` is the workflow for SQLite locally; `deploy` is the workflow used by Vercel's build to apply pending migrations against Neon.
+5. **As a developer**, I can `vercel pull` to sync the deployed env back to my local `.env.development.local` if I ever need to debug against the production Neon DB (read-only by convention).
+
+## Non-goals
+- **No code-side refactor.** The provider adapters / AI features / sync functions are deployed as-is. The only code changes are: (a) `prisma/schema.prisma` gains a `directUrl` line (Neon's Prisma + connection-pooling pattern), (b) a tiny `Bytes`-column-compatibility audit on the `MailAccount` encrypted secret (SQLite stores `Bytes` as BLOB; Postgres as `BYTEA` — Prisma handles the mapping but the migration's been authored against SQLite, so a forward-compat shadow-DB step in the Neon migration is in scope).
+- **No second domain.** One Vercel project, one preview URL, one production URL — that's it. No custom domain in this spec. (The reviewer can use the default `*.vercel.app` URL.)
+- **No CI separate from Vercel.** Vercel runs the build + Prisma migrations on deploy; we don't add a GitHub Actions pipeline for lint / typecheck / test (the Vercel build already typechecks via Next's build; tests run locally as part of the spec's hand-off checklist).
+- **No Vercel Analytics, Speed Insights, or other paid add-ons.** Free tier of everything: Vercel hobby, Neon free, Inngest free, Anthropic pay-as-you-go.
+- **No production-grade rate limiting upgrade.** The in-memory limiter shipped in `ai-summaries` is acceptable for the eval; CLAUDE.md rule #10 explicitly admits "Revisit only if deployed traffic warrants a distributed limiter." Documented as deferred.
+- **No monitoring / alerting.** Vercel's built-in logs + Inngest's function dashboard are the observability surface. No Sentry, no Datadog, no PagerDuty.
+- **No staging environment.** Vercel's `Preview` deployments (auto-generated per branch) are the staging surface; no separate Neon DB for them — they share production Neon with a `?schema=preview` qualifier IF the eval reviewer touches branches (otherwise the production schema is the only one).
+- **No backup / disaster-recovery plan.** Single tenant, eval-grade.
+- **No HTTP/2 push, no Edge-runtime migration, no Vercel Functions API customization.** The defaults (Node 20 runtime, Iad1 region) are fine.
+
+## In-scope surfaces
+- **`prisma/schema.prisma`** — change the datasource provider from `sqlite` to `postgresql`. Add a `directUrl = env("DIRECT_URL")` alongside `url = env("DATABASE_URL")` so Prisma's migrate runner can connect directly to Neon while the runtime uses the pooled connection string. This requires authoring a **second migration** that re-creates every table against Postgres (Prisma's `migrate dev` against an empty Postgres DB generates this).
+- **`prisma/migrations/<timestamp>_postgres_init/migration.sql`** — new migration that creates all tables (User, Account, Session, VerificationToken, MailAccount, Thread, Message, Attachment, Draft, AISummary, PriorityScore) against Postgres. The existing SQLite migrations stay committed for documentation, but Vercel runs `prisma migrate deploy` against Neon which applies the Postgres migration as the source of truth.
+- **`vercel.json`** — new file at repo root. Sets:
+  - `buildCommand`: `"prisma migrate deploy && next build"` (runs migrations against Neon before the Next.js build that needs `@prisma/client` types).
+  - `framework`: `"nextjs"`.
+  - `regions`: `["iad1"]` (US East, closest to Neon's default region — keep them co-located for query latency).
+  - `crons`: empty array (cron jobs run via Inngest cloud, not via Vercel cron).
+- **`package.json`** — add a `db:migrate:deploy` npm script that runs `prisma migrate deploy` (used by Vercel's build).
+- **`.env.example`** — update with the full env-var list for production: `DATABASE_URL`, `DIRECT_URL`, `ANTHROPIC_API_KEY`, `AUTH_SECRET`, `ENCRYPTION_KEY`, `NEXTAUTH_URL` (the deployed URL), `GOOGLE_CLIENT_ID/SECRET`, `AZURE_AD_CLIENT_ID/SECRET/TENANT_ID`, `INNGEST_EVENT_KEY`, `INNGEST_SIGNING_KEY`. Each with a short comment on where to obtain.
+- **`docs/deploy.md`** — new file. Step-by-step deployment runbook: Neon project creation, Vercel project creation, env var setup, OAuth redirect URI updates (Google Cloud Console, Azure Portal), Inngest cloud project + signing keys, first deploy, smoke-test checklist.
+- **`README.md`** — modify. Update the "Getting started" section to link to `docs/deploy.md` for production deploy; keep the local-dev steps unchanged.
+- **`lib/env.ts`** — extend the Zod schema with `DIRECT_URL: z.string().optional()` (optional — only needed at migrate time; runtime uses `DATABASE_URL`) and `NEXTAUTH_URL: z.string().url().optional()` (Auth.js auto-detects from `VERCEL_URL` if absent, but having it explicit avoids cookie / OAuth-redirect surprises). Add a one-line comment on each.
+
+## Risks / open questions
+1. **SQLite → Postgres migration semantic gaps.** The dev schema uses `Json` columns (Prisma maps SQLite-side as `TEXT-with-JSON`, Postgres-side as `JSONB`). Any code that JSON-stringifies on write or parses on read works identically. The `Bytes` columns (MailAccount.encryptedSecret/secretIv/secretTag) become `BYTEA` on Postgres; Prisma's `Bytes` type handles this automatically. *Mitigation:* the deploy-runbook's smoke-test checklist explicitly walks through (a) sign-in with Google → confirm MailAccount row gets written with the encrypted secret round-trip working, (b) sync runs → confirm Thread/Message rows arrive, (c) AISummary upsert → confirm Json column accepts the usage payload. If any column-type mismatch surfaces, the fix is a Prisma `@db.X` type override in `schema.prisma` + a new migration.
+2. **Auth.js `NEXTAUTH_URL` semantics on Vercel.** Auth.js v5 derives the URL from `VERCEL_URL` automatically (a Vercel-provided env var). The deployed host is `https://${VERCEL_URL}`. *Mitigation:* document setting `NEXTAUTH_URL=https://<your-vercel-domain>` explicitly in the runbook to avoid edge cases with redirect URIs across preview deploys (preview deploys have rotating URLs; we treat them as ephemeral and don't bother with OAuth redirects for them — the runbook explicitly notes "OAuth only works on the production URL").
+3. **OAuth redirect URI registration.** Both Google (Cloud Console) and Microsoft (Azure Portal) require the redirect URI to be pre-registered. *Mitigation:* the runbook walks through adding `https://<your-vercel-domain>/api/auth/callback/google` to Google's authorized redirect URIs AND `https://<your-vercel-domain>/api/auth/callback/microsoft-entra-id` to Azure's. The localhost callbacks stay registered so local dev keeps working in parallel.
+4. **Inngest cloud event key vs dev key.** Production Inngest needs a real `INNGEST_EVENT_KEY` and `INNGEST_SIGNING_KEY` from the Inngest cloud dashboard. The local-dev defaults (`local-dev`) won't authenticate against cloud. *Mitigation:* the runbook documents the Inngest cloud project setup: create a new app, copy the keys, set them in Vercel, deploy. Inngest's Vercel integration auto-discovers `/api/inngest` and registers the cron + event functions.
+5. **Neon free-tier limits.** Free tier is 0.5 GB storage + 1 connection-pooled DB. Sufficient for an eval (single user, hundreds of messages, dozens of AI summaries). *Mitigation:* document the limit; if a reviewer uploads a 10,000-message mailbox the free tier could fill. Acceptable for the eval timeline.
+6. **Cold-start latency on Vercel.** Server Actions and Route Handlers cold-start ~500ms on Vercel hobby. The summary banner's TanStack Query loading state masks this fine on first thread-open. *Mitigation:* no change needed.
+7. **`prisma migrate deploy` failure during Vercel build.** If the Neon DB is unreachable or already-applied migrations conflict, the build fails. *Mitigation:* the runbook says "if migrate fails, check Neon dashboard for the table state; `prisma migrate resolve` is the recovery path." Out of automation scope.
+8. **Bundled OAuth client secrets in the eval review.** A reviewer pulling the repo could in theory recover dev secrets from git history if they were ever committed. *Mitigation:* `.env.local` is gitignored from foundation; secrets only live in Vercel project settings + the local `.env.local`. Audit confirmation in the runbook: "grep the git history for `sk-ant-`, `GOCSPX-`, and other secret prefixes before publishing the repo".
+
+## Definition of done
+- [ ] `prisma/schema.prisma` switched to `provider = "postgresql"`, `directUrl = env("DIRECT_URL")` added.
+- [ ] A new migration `<timestamp>_postgres_init/migration.sql` is committed, generated against an empty Postgres DB; it creates all tables matching the current Prisma model state.
+- [ ] `vercel.json` at the repo root with the build command, framework, and region.
+- [ ] `package.json` has the `db:migrate:deploy` script.
+- [ ] `lib/env.ts` accepts the new optional vars (`DIRECT_URL`, `NEXTAUTH_URL`) without breaking dev boot.
+- [ ] `.env.example` lists every production env var with a one-line "where to get it" comment.
+- [ ] `docs/deploy.md` exists and walks through Neon → Vercel → Inngest → OAuth-redirect-URI updates → first deploy → smoke-test, in that order. Includes screenshots OR clear-enough text that a reviewer with no project context can follow.
+- [ ] `README.md` links to `docs/deploy.md` from the getting-started section.
+- [ ] A manual deploy run completes successfully: `vercel --prod` (or `git push` to main with the Vercel GitHub integration), the build succeeds, the production URL loads `/inbox`, sign-in with Google works, the first sync writes a Message row to Neon visible in the Neon SQL editor.
+- [ ] `security-reviewer` PASS — focus on (a) no secrets committed to the repo, (b) `NEXTAUTH_URL` + `AUTH_SECRET` set in Vercel, (c) `ENCRYPTION_KEY` set in Vercel (re-using the dev key would let the dev DB and prod DB cross-decrypt — they MUST be distinct), (d) Neon connection string uses TLS (it does by default), (e) OAuth redirect URIs scoped to the deployed domain only.
+- [ ] No `.claude/CURRENT_SPEC` advance after this — this is the last spec in the roadmap. The post-deploy step is the eval submission itself.
