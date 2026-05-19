@@ -63,6 +63,58 @@ interface MicrosoftRefreshResponse {
 const REFRESH_SKEW_SECONDS = 60;
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 
+// Hard ceiling on how long we'll wait for an OAuth token refresh. Without
+// this, an upstream Google / Microsoft outage can hang a Server Action
+// indefinitely — the request keeps a Prisma connection AND the user-facing
+// HTTP socket open, which is the root of the "page still loading 20
+// minutes in" failure mode reported during manual testing. 15s is well
+// above the p99 for both providers but short enough that a hung dependency
+// surfaces as an `AuthError` (which the UI already maps to a reconnect
+// prompt) instead of an infinite spinner.
+const REFRESH_TIMEOUT_MS = 15_000;
+
+/**
+ * Race a fetch against a setTimeout-driven `TimeoutError`. We deliberately
+ * do NOT pass an AbortSignal through to fetch — under Vitest the global
+ * `AbortSignal` constructor user code receives is different from the one
+ * MSW captured at module-load time, which makes MSW's
+ * `recordRawHeaders` reject any signal we hand it as "not an instance of
+ * AbortSignal". `Promise.race` against a timer is the portable workaround.
+ *
+ * Trade-off: a fetch that doesn't resolve within `timeoutMs` keeps running
+ * in the background until Node's HTTP keepalive eventually closes it.
+ * Acceptable for OAuth refresh — these calls are infrequent and small,
+ * and the failure mode we care about is "user request returns fast" not
+ * "request leak is impossible". The caller treats `TimeoutError` the
+ * same way it would treat an `AbortError`.
+ */
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      const err = new Error(`fetch timed out after ${timeoutMs}ms`) as Error & {
+        name: string;
+      };
+      err.name = "TimeoutError";
+      reject(err);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([fetch(url, init), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Match the timeout/abort error shapes that `AbortSignal.timeout` can
+ * raise across Node versions. Either name is "we hit the wall, give up".
+ */
+function isAbortLike(e: unknown): boolean {
+  const err = e as { name?: string } | null | undefined;
+  return err?.name === "AbortError" || err?.name === "TimeoutError";
+}
+
 export async function getMailboxSecret(accountId: string): Promise<MailboxSecret> {
   const row = await prisma.mailAccount.findUniqueOrThrow({
     where: { id: accountId },
@@ -130,16 +182,33 @@ async function refreshGoogleToken(refreshToken: string): Promise<GoogleRefreshRe
     throw new Error("GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET not configured");
   }
 
-  const res = await fetch(GOOGLE_TOKEN_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-      grant_type: "refresh_token",
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      GOOGLE_TOKEN_URL,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: clientId,
+          client_secret: clientSecret,
+          refresh_token: refreshToken,
+          grant_type: "refresh_token",
+        }),
+      },
+      REFRESH_TIMEOUT_MS,
+    );
+  } catch (e) {
+    // Timeout / abort from `AbortSignal.timeout` above, or any transport
+    // failure. Surface as transient AuthError so the canonicalizer maps
+    // it to "try again in a moment" rather than the reconnect prompt —
+    // the user's refresh token is presumably fine; Google's token
+    // endpoint just didn't respond inside our budget.
+    if (isAbortLike(e)) {
+      throw new AuthError("Google token refresh timed out", { transient: true });
+    }
+    throw e;
+  }
 
   if (!res.ok) {
     const body = await res.text();
@@ -173,17 +242,29 @@ async function refreshMicrosoftToken(
   }
 
   const tokenUrl = `https://login.microsoftonline.com/${tenantId}/oauth2/v2.0/token`;
-  const res = await fetch(tokenUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-      grant_type: "refresh_token",
-      scope,
-    }),
-  });
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(
+      tokenUrl,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({
+          client_id: clientId,
+          client_secret: clientSecret,
+          refresh_token: refreshToken,
+          grant_type: "refresh_token",
+          scope,
+        }),
+      },
+      REFRESH_TIMEOUT_MS,
+    );
+  } catch (e) {
+    if (isAbortLike(e)) {
+      throw new AuthError("Microsoft token refresh timed out", { transient: true });
+    }
+    throw e;
+  }
 
   if (!res.ok) {
     const body = await res.text();

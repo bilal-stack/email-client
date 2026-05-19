@@ -24,20 +24,18 @@ export default async function LandingPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Sign in to get started</CardTitle>
+          <CardTitle>Get started</CardTitle>
           <CardDescription>
-            Connect a mailbox to start using the inbox. You can add more accounts later.
+            New here? Create an account. Already have one? Log in. Either way, you'll pick a
+            mailbox provider on the next screen.
           </CardDescription>
         </CardHeader>
-        <CardContent className="flex flex-col gap-3 sm:flex-row sm:flex-wrap">
-          <Button asChild>
-            <Link href="/signin?provider=google">Sign in with Google</Link>
+        <CardContent className="flex flex-col gap-3 sm:flex-row">
+          <Button asChild className="sm:flex-1">
+            <Link href="/login">Log in</Link>
           </Button>
-          <Button asChild variant="outline">
-            <Link href="/signin?provider=microsoft-entra-id">Sign in with Microsoft</Link>
-          </Button>
-          <Button variant="ghost" disabled title="Coming soon (spec: imap-provider)">
-            Use IMAP (coming soon)
+          <Button asChild variant="outline" className="sm:flex-1">
+            <Link href="/signup">Sign up</Link>
           </Button>
         </CardContent>
       </Card>

@@ -177,6 +177,89 @@ describe("GmailProvider.sendMessage", () => {
     expect(observedRaw).toContain('Content-Type: text/html; charset="UTF-8"');
     expect(observedRaw).toContain("<p>Body</p>");
   });
+
+  it("builds a multipart/mixed message when attachments are present, with base64-encoded body + attachment parts", async () => {
+    // Pins the fix on 2026-05-19 where buildRfc2822 was silently dropping
+    // draft.attachments — the recipient saw the body but not the file.
+    let observedRaw: string | undefined;
+    const sendResp = await loadFixture("messages.send.ok.json");
+    server.use(
+      http.post(`${GMAIL}/messages/send`, async ({ request }) => {
+        const body = (await request.json()) as { raw: string };
+        observedRaw = Buffer.from(body.raw, "base64url").toString("utf8");
+        return HttpResponse.json(sendResp);
+      }),
+    );
+
+    const provider = new GmailProvider(await createAccount());
+    const attachmentBytes = Buffer.from("hello world", "utf8");
+    await provider.sendMessage({
+      to: [{ email: "rcpt@example.com" }],
+      subject: "with attachment",
+      bodyHtml: "<p>see file</p>",
+      attachments: [
+        { filename: "hello.txt", mimeType: "text/plain", content: attachmentBytes },
+      ],
+    });
+
+    if (!observedRaw) throw new Error("expected a raw message body");
+    // Outer envelope switches to multipart/mixed with a boundary param.
+    expect(observedRaw).toMatch(/^Content-Type: multipart\/mixed; boundary="=_b_[0-9a-f]+_="$/m);
+
+    // Body part: base64-encoded HTML, NOT inline plaintext.
+    expect(observedRaw).toContain('Content-Type: text/html; charset="UTF-8"');
+    expect(observedRaw).toContain("Content-Transfer-Encoding: base64");
+    expect(observedRaw).toContain(Buffer.from("<p>see file</p>", "utf8").toString("base64"));
+
+    // Attachment part: filename in both Content-Type name= and
+    // Content-Disposition filename=; bytes base64-encoded.
+    expect(observedRaw).toContain('Content-Type: text/plain; name="hello.txt"');
+    expect(observedRaw).toContain('Content-Disposition: attachment; filename="hello.txt"');
+    expect(observedRaw).toContain(attachmentBytes.toString("base64"));
+
+    // Closing boundary is present (otherwise some MUAs reject the message).
+    expect(observedRaw).toMatch(/--=_b_[0-9a-f]+_=--\r?\n?$/);
+  });
+
+  it("sanitizes filename characters that would break MIME header syntax", async () => {
+    // Quotes and line breaks in a filename would terminate the
+    // Content-Disposition header early and let an attacker inject
+    // arbitrary headers. The sanitizer replaces them with underscores.
+    let observedRaw: string | undefined;
+    const sendResp = await loadFixture("messages.send.ok.json");
+    server.use(
+      http.post(`${GMAIL}/messages/send`, async ({ request }) => {
+        const body = (await request.json()) as { raw: string };
+        observedRaw = Buffer.from(body.raw, "base64url").toString("utf8");
+        return HttpResponse.json(sendResp);
+      }),
+    );
+
+    const provider = new GmailProvider(await createAccount());
+    await provider.sendMessage({
+      to: [{ email: "rcpt@example.com" }],
+      subject: "evil filename",
+      bodyHtml: "<p>x</p>",
+      attachments: [
+        {
+          // Embedded `"` and `\r\n` — would break the header without sanitization.
+          filename: 'evil".txt\r\nX-Injected: hostile',
+          mimeType: "text/plain",
+          content: Buffer.from("x", "utf8"),
+        },
+      ],
+    });
+
+    if (!observedRaw) throw new Error("expected a raw message body");
+    // Sanitization replaces `\r\n` with `__`, so "X-Injected:" survives as
+    // literal text INSIDE the quoted filename value. That's fine — it's
+    // a string in a parameter, not a real header. The thing that matters
+    // is no LINE starts with "X-Injected:", because that would mean the
+    // attacker broke out of the quoted value into a fresh header.
+    expect(observedRaw).not.toMatch(/(^|\r?\n)X-Injected:/);
+    // Sanitized form: each unsafe char replaced with `_`.
+    expect(observedRaw).toContain('filename="evil_.txt__X-Injected: hostile"');
+  });
 });
 
 describe("GmailProvider.reply", () => {
@@ -417,6 +500,29 @@ describe("GmailProvider.syncDelta", () => {
 
   it("expired history: 404 with historyId not found → AuthError with reconnect message", async () => {
     const err = await loadFixture("history.list.expired.json");
+    server.use(http.get(`${GMAIL}/history`, () => HttpResponse.json(err, { status: 404 })));
+
+    const provider = new GmailProvider(await createAccount());
+    await expect(provider.syncDelta("12340")).rejects.toMatchObject({
+      name: "AuthError",
+      message: expect.stringContaining("Sync history expired — reconnect required"),
+    });
+  });
+
+  it("expired history: 404 with generic 'Requested entity was not found' → AuthError with reconnect message", async () => {
+    // Gmail's history endpoint sometimes returns this generic 404 message
+    // when the startHistoryId is past the ~7-day retention window — without
+    // any historyId / startHistoryId substring the global mapError regex
+    // would match. The call-site catch in syncDelta converts it directly
+    // to AuthError so the reconnect path fires. This test pins that
+    // contract against the regression seen on 2026-05-19.
+    const err = {
+      error: {
+        code: 404,
+        message: "Requested entity was not found.",
+        errors: [{ message: "Requested entity was not found.", reason: "notFound" }],
+      },
+    };
     server.use(http.get(`${GMAIL}/history`, () => HttpResponse.json(err, { status: 404 })));
 
     const provider = new GmailProvider(await createAccount());

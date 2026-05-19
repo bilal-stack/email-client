@@ -50,9 +50,21 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     // env-var auto-detection (which expects AUTH_GOOGLE_ID/AUTH_GOOGLE_SECRET,
     // not GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET). Keeps `.env` naming
     // consistent across the project + matches what most tutorials show.
+    //
+    // `allowDangerousEmailAccountLinking: true` — by default Auth.js refuses
+    // to auto-link an OAuth sign-in to a pre-existing User row that shares
+    // the OAuth profile's email (defense against account-takeover via email
+    // impersonation). Our product model EXPECTS one User to connect multiple
+    // provider accounts that share an email (e.g. a Gmail address that's
+    // also registered as a Microsoft account login). Without this flag, the
+    // second provider sign-in fails with `OAuthAccountNotLinked` even when
+    // it's the same person, and the user can't recover in-app. We accept
+    // the trade-off: a hostile actor who controls the OAuth-providing
+    // email already has effective control of the inbox via that provider.
     Google({
       clientId: env.GOOGLE_CLIENT_ID,
       clientSecret: env.GOOGLE_CLIENT_SECRET,
+      allowDangerousEmailAccountLinking: true,
       authorization: {
         params: { scope: GOOGLE_SCOPES, access_type: "offline", prompt: "consent" },
       },
@@ -60,6 +72,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     MicrosoftEntraID({
       clientId: env.AZURE_AD_CLIENT_ID,
       clientSecret: env.AZURE_AD_CLIENT_SECRET,
+      allowDangerousEmailAccountLinking: true,
       authorization: { params: { scope: MICROSOFT_SCOPES } },
       issuer: `https://login.microsoftonline.com/${env.AZURE_AD_TENANT_ID}/v2.0`,
     }),
@@ -171,7 +184,27 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     ...authConfig.callbacks,
     signIn: handleSignIn,
     async jwt({ token, user }) {
-      if (user?.id) token.userId = user.id;
+      if (user?.id) {
+        // First-time sign-in (no existing session) — set token.userId so
+        // the resulting JWT identifies this user on subsequent requests.
+        if (!token.userId) {
+          token.userId = user.id;
+          return token;
+        }
+        // Existing session + OAuth callback firing: this is an "add a
+        // mailbox" flow. The handleSignIn callback above has already
+        // attached the new MailAccount to the existing session's user
+        // (via the add-mailbox-cookie intent path). DO NOT overwrite
+        // token.userId — doing so would flip the session to whichever
+        // User PrismaAdapter resolved from the new OAuth profile, which
+        // is often a different (or freshly-created) row when the new
+        // provider's email doesn't match the active user's email.
+        //
+        // The visible symptom of overwriting: clicking "Add mailbox" with
+        // Microsoft after signing up with Gmail would land you on an
+        // empty inbox under a phantom user, with the new MailAccount
+        // attached to a different User from your original session.
+      }
       return token;
     },
     async session({ session, token }) {

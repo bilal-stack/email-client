@@ -13,7 +13,7 @@
 import { ShowPromptModal } from "@/app/inbox/[threadId]/_components/show-prompt-modal";
 import { summarizeThread } from "@/app/inbox/[threadId]/summary-actions";
 import { useQuery } from "@tanstack/react-query";
-import { Calendar, CheckCircle2, FileText, Mail } from "lucide-react";
+import { Calendar, CheckCircle2, FileText, Mail, Sparkles } from "lucide-react";
 import { useState } from "react";
 
 interface SummaryBannerProps {
@@ -53,9 +53,13 @@ export function SummaryBanner({ threadId }: SummaryBannerProps) {
     return (
       <div
         aria-busy="true"
-        aria-label="Loading summary"
-        className="border-b border-zinc-200 bg-zinc-50 px-4 py-3 sm:px-6"
+        aria-label="Generating AI summary"
+        className="border-b border-zinc-200 bg-gradient-to-r from-indigo-50/60 to-zinc-50 px-4 py-3 sm:px-6"
       >
+        <p className="mb-2 inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-indigo-700">
+          <Sparkles className="h-3.5 w-3.5 animate-pulse" aria-hidden />
+          AI summary — generating…
+        </p>
         <div className="space-y-2">
           <div className="h-4 w-4/5 animate-pulse rounded bg-zinc-200" />
           <div className="h-3 w-2/5 animate-pulse rounded bg-zinc-200" />
@@ -106,8 +110,12 @@ export function SummaryBanner({ threadId }: SummaryBannerProps) {
 
   return (
     <>
-      <div className="flex flex-col gap-2 border-b border-zinc-200 bg-zinc-50 px-4 py-3 sm:flex-row sm:items-start sm:gap-3 sm:px-6">
+      <div className="flex flex-col gap-2 border-b border-zinc-200 bg-gradient-to-r from-indigo-50/60 to-zinc-50 px-4 py-3 sm:flex-row sm:items-start sm:gap-3 sm:px-6">
         <div className="min-w-0 flex-1 space-y-2">
+          <p className="inline-flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-indigo-700">
+            <Sparkles className="h-3.5 w-3.5" aria-hidden />
+            AI summary
+          </p>
           <p className="text-sm font-medium leading-snug text-zinc-900 sm:text-base">
             {data.tldr}
           </p>

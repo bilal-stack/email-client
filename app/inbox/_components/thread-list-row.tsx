@@ -6,7 +6,8 @@ import { Checkbox } from "@/components/ui/checkbox";
 import type { ThreadRow } from "@/lib/db/inbox-queries";
 import { useInboxSelection } from "@/lib/inbox/selection-store";
 import { cn } from "@/lib/utils";
-import { AlertTriangle, Archive, Tag, Trash2 } from "lucide-react";
+import { useQueryClient } from "@tanstack/react-query";
+import { AlertTriangle, Archive, Sparkles, Tag, Trash2 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useTransition } from "react";
 
@@ -41,16 +42,30 @@ export function ThreadListRow({
   const senderLabel =
     row.participantCount > 2 ? `${row.fromName} +${row.participantCount - 1}` : row.fromName;
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [isPending, startTransition] = useTransition();
   const isSelected = useInboxSelection((s) => s.has(row.id));
   const toggleSelection = useInboxSelection((s) => s.toggle);
+
+  // Bust every variant of the inbox query key (any accountId / sort combo) so
+  // the row disappears immediately regardless of which view is open. We don't
+  // know the exact `(accountId, sort)` tuple this row is being viewed under
+  // from inside the row component, so we invalidate by predicate on the
+  // top-level "inbox" tag in the queryKey shape (see `_lib/query-keys.ts`).
+  const invalidateInbox = () =>
+    queryClient.invalidateQueries({
+      predicate: (q) => q.queryKey[0] === "inbox",
+    });
 
   const onArchive = (e: React.MouseEvent) => {
     e.stopPropagation();
     e.preventDefault();
     startTransition(async () => {
       const r = await archiveThreads({ threadIds: [row.id] });
-      if (r.ok) router.refresh();
+      if (r.ok) {
+        await invalidateInbox();
+        router.refresh();
+      }
     });
   };
   const onTrash = (e: React.MouseEvent) => {
@@ -58,7 +73,10 @@ export function ThreadListRow({
     e.preventDefault();
     startTransition(async () => {
       const r = await trashThreads({ threadIds: [row.id] });
-      if (r.ok) router.refresh();
+      if (r.ok) {
+        await invalidateInbox();
+        router.refresh();
+      }
     });
   };
 
@@ -123,13 +141,18 @@ export function ThreadListRow({
             {row.subject || row.snippet || "(no subject)"}
           </p>
           {row.reason !== null ? (
-            <span className="ml-2 inline-block max-w-[18ch] truncate rounded-full bg-zinc-100 px-2 py-0.5 text-xs text-zinc-700">
-              {row.reason}
+            <span
+              title={`AI prioritization: ${row.reason}`}
+              className="ml-2 inline-flex max-w-[20ch] items-center gap-1 truncate rounded-full bg-indigo-50 px-2 py-0.5 text-xs text-indigo-700"
+            >
+              <Sparkles className="h-3 w-3 shrink-0" aria-hidden="true" />
+              <span className="truncate">{row.reason}</span>
             </span>
           ) : (
             <span
               className="ml-2 inline-block w-5 text-center text-xs text-zinc-300"
               aria-hidden="true"
+              title="AI is scoring this thread…"
             >
               …
             </span>

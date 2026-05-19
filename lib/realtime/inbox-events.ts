@@ -15,6 +15,23 @@ export type InboxSseEvent =
       threadId: string;
       scoredMessageIds: string[];
       at: number;
+    }
+  | {
+      type: "send-task-completed";
+      taskId: string;
+      /// Local Thread DB id the just-sent message landed in — UI uses this
+      /// to navigate the user to the conversation if they want.
+      threadId: string;
+      at: number;
+    }
+  | {
+      type: "send-task-failed";
+      taskId: string;
+      /// Canonical, user-safe error string. Provider envelope detail has
+      /// already been stripped at this point — never contains tenant ids,
+      /// request ids, or raw provider phrasing.
+      error: string;
+      at: number;
     };
 
 export interface SyncEvent {
@@ -45,6 +62,32 @@ export function emitPriorityUpdatedEvent(
   event: { threadId: string; scoredMessageIds: string[]; at: number },
 ): void {
   const payload: InboxSseEvent = { type: "priority-updated", ...event };
+  bus.emit(channel(userId), payload);
+}
+
+/**
+ * Fired by the send-task worker after a successful provider send + local
+ * Message write. The browser-side listener uses this to invalidate the
+ * Sent / Inbox queries and dismiss any "sending…" indicator the UI was
+ * showing for `taskId`.
+ */
+export function emitSendTaskCompletedEvent(
+  userId: string,
+  event: { taskId: string; threadId: string; at: number },
+): void {
+  const payload: InboxSseEvent = { type: "send-task-completed", ...event };
+  bus.emit(channel(userId), payload);
+}
+
+/**
+ * Fired when the worker gives up on a task. `error` is already canonicalized
+ * (action="send") at the call site — safe to render directly.
+ */
+export function emitSendTaskFailedEvent(
+  userId: string,
+  event: { taskId: string; error: string; at: number },
+): void {
+  const payload: InboxSseEvent = { type: "send-task-failed", ...event };
   bus.emit(channel(userId), payload);
 }
 

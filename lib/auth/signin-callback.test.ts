@@ -111,7 +111,9 @@ describe("handleSignIn", () => {
       profile,
     });
 
-    expect(result).toBe("/signin?error=ScopeMissing&provider=google");
+    // The scope-missing redirect points at /login (the primary entry for
+    // anonymous visitors); /signin is now reserved for the add-mailbox flow.
+    expect(result).toBe("/login?error=ScopeMissing&provider=google");
     const row = await prisma.mailAccount.findFirst({ where: { userId } });
     expect(row).toBeNull();
   });
@@ -249,7 +251,9 @@ describe("handleSignIn", () => {
       account: makeAccount({ provider: "microsoft-entra-id", scope: "openid email profile" }),
       profile,
     });
-    expect(without).toBe("/signin?error=ScopeMissing&provider=microsoft-entra-id");
+    // The scope-missing redirect surfaces on /login since the new auth
+    // routes are the primary entry points; /signin is now add-only.
+    expect(without).toBe("/login?error=ScopeMissing&provider=microsoft-entra-id");
 
     const withScope = await handleSignIn({
       user: { id: userId, email: profile.email },
@@ -264,5 +268,110 @@ describe("handleSignIn", () => {
       where: { userId, provider: "graph", emailAddress: profile.email },
     });
     expect(row).not.toBeNull();
+  });
+
+  // ── Cross-user MailAccount conflict guard ────────────────────────────────
+  //
+  // When the OAuth email already exists as a `MailAccount.emailAddress` under
+  // a DIFFERENT user, we refuse the link with `/signin?error=AccountConflict`.
+  // This protects the model's "one mailbox = one user" invariant from being
+  // violated by an OAuth callback that would otherwise reattach a mailbox to
+  // the wrong identity (e.g. when an existing user is signed in via Gmail
+  // and tries to add a Microsoft account whose email is already connected to
+  // someone else's account).
+
+  it("refuses to link a MailAccount that already belongs to a different user", async () => {
+    // Pre-existing user with the Gmail-flavored MailAccount.
+    const sharedEmail = `dual-${randomUUID()}@example.com`;
+    const ownerUserId = await createUser(sharedEmail);
+    await handleSignIn({
+      user: { id: ownerUserId, email: sharedEmail },
+      account: makeAccount(),
+      profile: makeProfile({ email: sharedEmail }),
+    });
+
+    // A different user tries to sign in with the same OAuth email — the
+    // OAuth callback's `user.id` is theirs, but our DB already has a
+    // MailAccount for that email under the owner's id.
+    const intruderUserId = await createUser(`intruder-${randomUUID()}@example.com`);
+    const intruderProfile = makeProfile({ email: sharedEmail });
+
+    const result = await handleSignIn({
+      user: { id: intruderUserId, email: sharedEmail },
+      account: makeAccount({ providerAccountId: `intruder-paid-${randomUUID()}` }),
+      profile: intruderProfile,
+    });
+
+    expect(result).toBe("/signin?error=AccountConflict");
+
+    // Defense-in-depth: the owner's MailAccount must NOT have been mutated
+    // (e.g. reassigned to the intruder). It should still belong to the
+    // original owner with no second MailAccount row created.
+    const rows = await prisma.mailAccount.findMany({
+      where: { emailAddress: sharedEmail },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.userId).toBe(ownerUserId);
+  });
+
+  it("does NOT trigger the conflict guard when the same user re-signs-in to their own mailbox", async () => {
+    // Re-signing-in with the same provider for the same user should hit the
+    // existing-row update path (already covered by the "repeat sign-in"
+    // test), NOT the cross-user conflict refusal. Regression pin.
+    const profile = makeProfile();
+    const userId = await createUser(profile.email);
+
+    const first = await handleSignIn({
+      user: { id: userId, email: profile.email },
+      account: makeAccount({ access_token: "ya29.first" }),
+      profile,
+    });
+    expect(first).toBe(true);
+
+    const second = await handleSignIn({
+      user: { id: userId, email: profile.email },
+      account: makeAccount({ access_token: "ya29.second" }),
+      profile,
+    });
+    expect(second).toBe(true);
+
+    const rows = await prisma.mailAccount.findMany({
+      where: { emailAddress: profile.email },
+    });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.userId).toBe(userId);
+  });
+
+  it("allows the same user to connect two different provider accounts with distinct emails", async () => {
+    // Same person, two providers, two emails — both MailAccounts should
+    // land under the same User row. This is the happy path for the
+    // multi-mailbox model.
+    const gmailProfile = makeProfile();
+    const userId = await createUser(gmailProfile.email);
+    await handleSignIn({
+      user: { id: userId, email: gmailProfile.email },
+      account: makeAccount(),
+      profile: gmailProfile,
+    });
+
+    const microsoftEmail = `other-${randomUUID()}@example.com`;
+    const microsoftProfile = makeProfile({ email: microsoftEmail });
+    const result = await handleSignIn({
+      user: { id: userId, email: microsoftEmail },
+      account: makeAccount({
+        provider: "microsoft-entra-id",
+        scope: "openid email profile Mail.ReadWrite Mail.Send",
+      }),
+      profile: microsoftProfile,
+    });
+    expect(result).toBe(true);
+
+    const rows = await prisma.mailAccount.findMany({
+      where: { userId },
+      orderBy: { emailAddress: "asc" },
+    });
+    expect(rows).toHaveLength(2);
+    const providers = rows.map((r) => r.provider).sort();
+    expect(providers).toEqual(["gmail", "graph"]);
   });
 });

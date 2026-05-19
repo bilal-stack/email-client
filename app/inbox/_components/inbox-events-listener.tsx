@@ -1,5 +1,6 @@
 "use client";
 
+import { OUTBOX_QUERY_KEY } from "@/app/inbox/_components/outbox-status";
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect } from "react";
 
@@ -10,6 +11,8 @@ import { useEffect } from "react";
 type ParsedEvent =
   | { type: "inbox-sync"; threadIds: string[] }
   | { type: "priority-updated"; threadId: string; scoredMessageIds: string[] }
+  | { type: "send-task-completed"; taskId: string; threadId: string }
+  | { type: "send-task-failed"; taskId: string; error: string }
   | { type: "unknown" };
 
 function parseEvent(raw: unknown): ParsedEvent {
@@ -30,6 +33,18 @@ function parseEvent(raw: unknown): ParsedEvent {
       : [];
     if (!threadId) return { type: "unknown" };
     return { type: "priority-updated", threadId, scoredMessageIds: ids };
+  }
+  if (obj.type === "send-task-completed") {
+    const taskId = typeof obj.taskId === "string" ? obj.taskId : "";
+    const threadId = typeof obj.threadId === "string" ? obj.threadId : "";
+    if (!taskId || !threadId) return { type: "unknown" };
+    return { type: "send-task-completed", taskId, threadId };
+  }
+  if (obj.type === "send-task-failed") {
+    const taskId = typeof obj.taskId === "string" ? obj.taskId : "";
+    const error = typeof obj.error === "string" ? obj.error : "Send failed.";
+    if (!taskId) return { type: "unknown" };
+    return { type: "send-task-failed", taskId, error };
   }
   // Legacy/unwrapped frame (pre–discriminated-union shape) — treat as
   // inbox-sync if it carries a `threadIds` array. Defensive against an
@@ -78,6 +93,18 @@ export function InboxEventsListener() {
         // thread-level chip surface.
         qc.invalidateQueries({ queryKey: ["inbox"] });
         qc.invalidateQueries({ queryKey: ["thread-summary", parsed.threadId] });
+        return;
+      }
+
+      if (
+        parsed.type === "send-task-completed" ||
+        parsed.type === "send-task-failed"
+      ) {
+        // Outbox pill drives off this query; refetch so the row drops
+        // (completed → deleted) or flips to its error state (failed).
+        // Inbox is invalidated via the inbox-sync event the worker emits
+        // alongside completion, so we don't double-invalidate here.
+        qc.invalidateQueries({ queryKey: OUTBOX_QUERY_KEY });
         return;
       }
     };

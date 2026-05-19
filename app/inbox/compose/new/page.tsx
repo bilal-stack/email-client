@@ -17,7 +17,8 @@ export default async function ComposeNewPage({ searchParams }: ComposeNewPagePro
   if (!session?.user?.id) {
     return (
       <div className="p-6 text-sm text-zinc-600">
-        You need to be signed in. <Link href="/signin">Sign in.</Link>
+        You need to be signed in. <Link href="/login">Log in</Link> or{" "}
+        <Link href="/signup">sign up</Link>.
       </div>
     );
   }

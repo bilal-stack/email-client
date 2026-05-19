@@ -36,6 +36,24 @@ describe("canonicalizeProviderError", () => {
     expect(canonicalizeProviderError(stale, "send")).not.toContain("historyId");
   });
 
+  it("AuthError(transient: true) → 'try again in a moment' (NOT the reconnect prompt)", () => {
+    // The OAuth refresh-timeout path throws AuthError with transient=true.
+    // The user's refresh token is presumably fine; the right affordance is
+    // RETRY, not reconnect. The canonicalizer keys off the flag.
+    const transient = new AuthError("Google token refresh timed out", { transient: true });
+    expect(canonicalizeProviderError(transient, "send")).toBe(
+      "Authentication is slow right now. Please try again in a moment.",
+    );
+    expect(canonicalizeProviderError(transient, "send")).not.toContain("reconnect");
+
+    // Default AuthError (transient=false) still maps to the reconnect prompt
+    // — confirms the new branch hasn't regressed the existing case.
+    const persistent = new AuthError("Refresh token revoked");
+    expect(canonicalizeProviderError(persistent, "send")).toBe(
+      "Please reconnect this account to continue.",
+    );
+  });
+
   it("RateLimitError → fixed wait-and-retry string", () => {
     expect(canonicalizeProviderError(new RateLimitError("retry after 30"), "send")).toBe(
       "Too many requests. Please wait a moment and try again.",

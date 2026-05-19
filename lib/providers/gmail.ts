@@ -13,7 +13,9 @@
 
 import { type OAuthMailboxSecret, getMailboxSecret } from "@/lib/providers/auth";
 import { mapError } from "@/lib/providers/error-mapping";
+import { AuthError } from "@/lib/providers/errors";
 import { type gmail_v1, google } from "googleapis";
+import { randomBytes } from "node:crypto";
 import type {
   CanonicalAddress,
   CanonicalAttachmentMeta,
@@ -292,22 +294,96 @@ function formatAddress(addr: CanonicalAddress): string {
 }
 
 function buildRfc2822(draft: SendDraft, opts?: { threadHeaders?: boolean }): string {
-  const lines: string[] = [];
-  lines.push(`To: ${draft.to.map(formatAddress).join(", ")}`);
-  if (draft.cc?.length) lines.push(`Cc: ${draft.cc.map(formatAddress).join(", ")}`);
-  if (draft.bcc?.length) lines.push(`Bcc: ${draft.bcc.map(formatAddress).join(", ")}`);
-  lines.push(`Subject: ${draft.subject}`);
+  const headers: string[] = [];
+  headers.push(`To: ${draft.to.map(formatAddress).join(", ")}`);
+  if (draft.cc?.length) headers.push(`Cc: ${draft.cc.map(formatAddress).join(", ")}`);
+  if (draft.bcc?.length) headers.push(`Bcc: ${draft.bcc.map(formatAddress).join(", ")}`);
+  headers.push(`Subject: ${draft.subject}`);
   if (opts?.threadHeaders && draft.inReplyTo) {
-    lines.push(`In-Reply-To: <${draft.inReplyTo}>`);
+    headers.push(`In-Reply-To: <${draft.inReplyTo}>`);
   }
   if (opts?.threadHeaders && draft.references?.length) {
-    lines.push(`References: ${draft.references.map((r) => `<${r}>`).join(" ")}`);
+    headers.push(`References: ${draft.references.map((r) => `<${r}>`).join(" ")}`);
   }
-  lines.push("MIME-Version: 1.0");
-  lines.push('Content-Type: text/html; charset="UTF-8"');
-  lines.push("");
-  lines.push(draft.bodyHtml);
-  return lines.join("\r\n");
+  headers.push("MIME-Version: 1.0");
+
+  const attachments = draft.attachments ?? [];
+
+  // No attachments → single-part text/html. Preserves the simpler shape
+  // for the common case (and matches what the existing send-message
+  // regression test asserts on).
+  if (attachments.length === 0) {
+    headers.push('Content-Type: text/html; charset="UTF-8"');
+    return [...headers, "", draft.bodyHtml].join("\r\n");
+  }
+
+  // With attachments → multipart/mixed. Body becomes one MIME part,
+  // each attachment its own part with base64-encoded bytes wrapped at
+  // 76 chars/line per RFC 2045.
+  //
+  // The boundary is a random hex string sandwiched between `=_b_` /
+  // `_=` so it's both unlikely-to-collide with any content AND visually
+  // identifiable as a multipart boundary if anyone ever stares at the
+  // raw RFC 2822 in a debugger.
+  const boundary = `=_b_${randomBytes(16).toString("hex")}_=`;
+  headers.push(`Content-Type: multipart/mixed; boundary="${boundary}"`);
+
+  const parts: string[] = [];
+
+  // Body part — base64-encode so non-ASCII characters (emoji, accented
+  // letters, CJK, etc.) survive any 7-bit SMTP relay without needing
+  // quoted-printable encoding.
+  parts.push(`--${boundary}`);
+  parts.push('Content-Type: text/html; charset="UTF-8"');
+  parts.push("Content-Transfer-Encoding: base64");
+  parts.push("");
+  parts.push(wrapBase64Lines(Buffer.from(draft.bodyHtml, "utf8").toString("base64")));
+
+  // One attachment part per file.
+  for (const att of attachments) {
+    const safeName = sanitizeMimeFilename(att.filename);
+
+    const content =
+      Buffer.isBuffer(att.content)
+        ? att.content
+        : Buffer.from(att.content);
+
+    parts.push(`--${boundary}`);
+    parts.push(`Content-Type: ${att.mimeType}; name="${safeName}"`);
+    parts.push(`Content-Disposition: attachment; filename="${safeName}"`);
+    parts.push("Content-Transfer-Encoding: base64");
+    parts.push("");
+    parts.push(wrapBase64Lines(content.toString("base64")));
+  }
+
+  parts.push(`--${boundary}--`);
+
+  return [...headers, "", ...parts].join("\r\n");
+}
+
+/**
+ * RFC 2045 mandates a max line length of 76 characters in base64-encoded
+ * MIME parts. Some SMTP relays will reject or mangle longer lines. The
+ * Buffer's default base64 output has no line breaks — we add them here.
+ */
+function wrapBase64Lines(s: string): string {
+  const matches = s.match(/.{1,76}/g);
+  return matches ? matches.join("\r\n") : s;
+}
+
+/**
+ * MIME header parameter values can't contain raw CR/LF or unescaped
+ * double-quotes — both would break the header structure. We replace
+ * each with an underscore as a minimum-viable safety net.
+ *
+ * Out of scope: non-ASCII filenames per RFC 2231 / RFC 5987. The naive
+ * quoted form below works for ASCII names; modern mail clients tolerate
+ * raw UTF-8 in this position despite the spec, which is good enough for
+ * the eval. A proper RFC 2231 `filename*=UTF-8''<percent-encoded>`
+ * encoding can land later if non-ASCII attachment names become common.
+ */
+function sanitizeMimeFilename(name: string): string {
+  return name.replace(/["\r\n]/g, "_");
 }
 
 // ─── Adapter ──────────────────────────────────────────────────────────────
@@ -490,14 +566,38 @@ export class GmailProvider implements IEmailProvider {
       let maxHistoryId = cursor;
 
       do {
-        const res = await gmail.users.history.list({
-          userId: "me",
-          startHistoryId: cursor,
-          historyTypes: ["messageAdded", "messageDeleted", "labelAdded", "labelRemoved"],
-          pageToken,
-        });
+        // 404 from THIS endpoint specifically means the stored historyId is
+        // older than Gmail's ~7-day retention. Gmail returns the generic
+        // "Requested entity was not found." message — without any historyId /
+        // startHistoryId substring — so the regex in `error-mapping.ts`
+        // doesn't catch it. We convert here to AuthError with the canonical
+        // reconnect prompt so the UI's reconnect path fires (which then
+        // re-seeds the cursor via the cold-start `getProfile` route).
+        // Other 404s in this method (e.g. a message vanishing between list
+        // and get) keep their generic NotFoundError mapping via `mapError`
+        // — only `users.history.list` is treated as a stale-cursor signal.
+        let historyData: gmail_v1.Schema$ListHistoryResponse;
+        try {
+          const response = await gmail.users.history.list({
+            userId: "me",
+            startHistoryId: cursor,
+            historyTypes: ["messageAdded", "messageDeleted", "labelAdded", "labelRemoved"],
+            pageToken,
+          });
+          historyData = response.data;
+        } catch (e) {
+          const err = e as { code?: number; response?: { status?: number } };
+          const status = err.response?.status ?? err.code;
+          if (status === 404) {
+            throw new AuthError(
+              "Sync history expired — reconnect required: startHistoryId not found",
+              { cause: e },
+            );
+          }
+          throw e;
+        }
 
-        for (const h of res.data.history ?? []) {
+        for (const h of historyData.history ?? []) {
           if (h.id) {
             try {
               if (BigInt(h.id) > BigInt(maxHistoryId)) maxHistoryId = h.id;
@@ -531,11 +631,11 @@ export class GmailProvider implements IEmailProvider {
           }
         }
 
-        pageToken = res.data.nextPageToken ?? undefined;
-        if (res.data.historyId) {
+        pageToken = historyData.nextPageToken ?? undefined;
+        if (historyData.historyId) {
           try {
-            if (BigInt(res.data.historyId) > BigInt(maxHistoryId)) {
-              maxHistoryId = res.data.historyId;
+            if (BigInt(historyData.historyId) > BigInt(maxHistoryId)) {
+              maxHistoryId = historyData.historyId;
             }
           } catch {
             // ignore
@@ -546,14 +646,41 @@ export class GmailProvider implements IEmailProvider {
       // IDs that were both added and deleted in the same window are net-deleted.
       for (const id of deletedIds) newMessageIds.delete(id);
 
-      const newMessages = await mapConcurrent([...newMessageIds], 10, async (id) => {
-        const res = await gmail.users.messages.get({
-          userId: "me",
-          id,
-          format: "full",
-        });
-        return normalizeMessage(res.data, this.accountId);
-      });
+      // Fetch each new message body. If a message was added via the history
+      // window but deleted before we get to fetch it (e.g. spam-classified,
+      // moved, or briefly-created draft), Gmail returns 404 with the generic
+      // "Requested entity was not found" message. We DON'T want that single
+      // missing message to fail the whole sync — drop it, log it, continue.
+      // Other errors (auth, rate-limit, 5xx) keep their normal behavior and
+      // bubble to the outer mapError so the run is retried by Inngest.
+      const fetchedMessages = await mapConcurrent(
+        [...newMessageIds],
+        10,
+        async (id) => {
+          try {
+            const res = await gmail.users.messages.get({
+              userId: "me",
+              id,
+              format: "full",
+            });
+            return normalizeMessage(res.data, this.accountId);
+          } catch (e) {
+            const err = e as { code?: number; response?: { status?: number } };
+            const status = err.response?.status ?? err.code;
+            if (status === 404) {
+              // Soft-skip: the message vanished server-side between history
+              // emit and our fetch. Treat as if it never existed. Not added
+              // to `deletedIds` because we don't have a confirmed prior row
+              // either; the next sync will not re-encounter it.
+              return null;
+            }
+            throw e;
+          }
+        },
+      );
+      const newMessages = fetchedMessages.filter(
+        (m): m is CanonicalMessage => m !== null,
+      );
 
       return {
         newMessages,

@@ -2,8 +2,15 @@
 // AISummary lands in ai-summaries spec. PriorityScore lands in ai-prioritization spec.
 
 datasource db {
-  provider = "sqlite"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  // `directUrl` is the un-pooled connection string. On a local Postgres /
+  // pgAdmin setup it's identical to `DATABASE_URL` (no PgBouncer); on
+  // Neon in production it's the dashboard's "Direct connection" URL so
+  // `prisma migrate` bypasses the pooler's transaction-mode limitations.
+  // Both env vars are optional; if `DIRECT_URL` isn't set Prisma falls
+  // back to `url` for migrate operations too.
+  directUrl = env("DIRECT_URL")
 }
 
 generator client {
@@ -21,6 +28,7 @@ model User {
   sessions      Session[]
   mailAccounts  MailAccount[]
   drafts        Draft[]
+  sendTasks     SendTask[]
   createdAt     DateTime      @default(now())
 }
 
@@ -77,6 +85,7 @@ model MailAccount {
   threads         Thread[]
   messages        Message[]
   drafts          Draft[]
+  sendTasks       SendTask[]
 
   @@unique([userId, provider, emailAddress])
 }
@@ -95,6 +104,7 @@ model Thread {
   participants     Json // CanonicalAddress[]
   messages         Message[]
   drafts           Draft[]
+  sendTasks        SendTask[]
   aiSummary        AISummary?
   createdAt        DateTime    @default(now())
   updatedAt        DateTime    @updatedAt
@@ -187,6 +197,106 @@ model Draft {
 
   @@unique([userId, threadId, mode])
   @@index([userId, updatedAt(sort: Desc)])
+}
+
+// ─── Background send queue ────────────────────────────────────────────────
+// Outbound mail is sent asynchronously via Inngest: the `sendDraft` Server
+// Action persists a SendTask + zero-or-more SendTaskAttachment rows and
+// returns immediately. The `process-send-task` Inngest function picks the
+// row up, calls the provider, records the resulting Message locally, and
+// then deletes the SendTask. SSE events fire on completion/failure so the
+// UI can update without a manual reload.
+//
+// Why a DB-backed queue rather than passing the draft inside the Inngest
+// event itself: Inngest event payloads have a ~1 MB hard cap, and a single
+// attachment can be up to 25 MB. Persisting bytes here lets the worker
+// stream them out at send time without round-tripping through the event bus.
+//
+// Failed tasks are NOT auto-deleted — the UI surfaces them so the user can
+// retry or discard, and the row holds the captured error for display.
+model SendTask {
+  id            String   @id @default(cuid())
+
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  accountId     String
+  account       MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  /// "new" | "reply" | "reply-all" | "forward" — validated upstream at Zod.
+  mode          String
+
+  /// Local Thread.id if this is a reply/forward against an existing thread.
+  /// `null` for a brand-new compose.
+  threadId      String?
+  thread        Thread?  @relation(fields: [threadId], references: [id], onDelete: SetNull)
+
+  /// Captured at enqueue time so the worker doesn't have to re-load the
+  /// thread (and so a thread deleted in-flight doesn't block the send).
+  providerThreadId String?
+
+  /// All recipient + header fields are JSON-typed to match the rest of the
+  /// mail schema. Shape is the same `CanonicalAddress` and string[] the
+  /// provider adapters already consume.
+  to            Json
+  cc            Json
+  bcc           Json
+
+  subject       String
+  /// HTML body AFTER server-side sanitization. Worker passes this through
+  /// to the provider verbatim.
+  bodyHtml      String
+  inReplyTo     String?
+  references    Json
+
+  /// Lifecycle:
+  ///   queued   → enqueued, worker hasn't claimed it yet
+  ///   sending  → worker is in the provider call
+  ///   sent     → provider accepted; row is normally deleted shortly after
+  ///   failed   → worker exhausted retries or hit a fatal error
+  status        String   @default("queued")
+
+  /// Sanitized error message when status='failed'. Never contains provider
+  /// envelope detail — the worker maps via `canonicalizeProviderError`
+  /// before writing here.
+  error         String?
+
+  /// Provider-assigned id once the send succeeds — used to link this row
+  /// to the eventual Message row (mostly for diagnostics; the worker
+  /// usually deletes the SendTask before this is queryable).
+  providerMessageId String?
+
+  /// Retry counter the worker bumps each attempt.
+  attempts      Int      @default(0)
+
+  attachments   SendTaskAttachment[]
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([accountId, createdAt(sort: Desc)])
+}
+
+/// Attachment bytes for an in-flight SendTask. Kept in a separate table so
+/// the SendTask row itself stays small and listable without dragging 25 MB
+/// blobs into every status query. Deleted via cascade when the task is
+/// removed.
+model SendTaskAttachment {
+  id        String   @id @default(cuid())
+
+  taskId    String
+  task      SendTask @relation(fields: [taskId], references: [id], onDelete: Cascade)
+
+  filename  String
+  mimeType  String
+  size      Int
+  /// Raw bytes — the worker base64-encodes these into the RFC 2822 it sends.
+  content   Bytes
+
+  createdAt DateTime @default(now())
+
+  @@index([taskId])
 }
 
 // ─── AI summary per thread (Phase 4 ai-summaries spec) ────────────────────

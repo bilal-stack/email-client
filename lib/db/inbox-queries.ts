@@ -21,6 +21,18 @@ export interface ThreadRow {
 
 export type InboxSort = "priority" | "time";
 
+/// Logical mail folder. Every value except `"drafts"` is resolved against
+/// `Thread.labels`. `"drafts"` is a separate code path that reads the
+/// `Draft` table and is intentionally NOT supported by `listThreadsForUser`
+/// — callers route to `listDraftsForUser` instead. See `app/inbox/page.tsx`.
+export type InboxFolder =
+  | "inbox"
+  | "sent"
+  | "archived"
+  | "spam"
+  | "trash"
+  | "all";
+
 export interface ListThreadsOptions {
   accountId?: string;
   cursor?: string;
@@ -29,6 +41,60 @@ export interface ListThreadsOptions {
   /// `"priority"` — by computed displayPriority DESC, then lastMessageAt DESC.
   /// `"time"` — by lastMessageAt DESC (the original behavior).
   sort?: InboxSort;
+  /// Default `"inbox"`. Selects which subset of the user's threads to return.
+  /// See `InboxFolder` for the semantics of each value. `"drafts"` is NOT
+  /// accepted here — it sources from the `Draft` table, not `Thread`.
+  folder?: InboxFolder;
+}
+
+/**
+ * Predicate-style filter applied in JS against a thread's `labels` array.
+ * Provider conventions (kept in lockstep across adapters):
+ *   - INBOX    → message landed in the inbox (Gmail INBOX; Graph "inbox" folder)
+ *   - SENT     → user sent it (Gmail SENT; Graph "sentitems")
+ *   - TRASH    → user-trashed
+ *   - SPAM     → provider-classified spam (Gmail SPAM; Graph "junkemail")
+ *
+ * "Archived" is the absence of INBOX without being TRASH/SPAM — Gmail's
+ * archive action removes INBOX; Graph's archive moves to a folder we map
+ * the same way at sync time.
+ */
+function threadMatchesFolder(labels: unknown[], folder: InboxFolder): boolean {
+  let hasInbox = false;
+  let hasSent = false;
+  let hasTrash = false;
+  let hasSpam = false;
+  for (const l of labels) {
+    if (l === "INBOX") hasInbox = true;
+    else if (l === "SENT") hasSent = true;
+    else if (l === "TRASH") hasTrash = true;
+    else if (l === "SPAM") hasSpam = true;
+  }
+  switch (folder) {
+    case "inbox":
+      // Standard inbox view: must be in INBOX, must not be trashed. A SENT-
+      // labeled thread that ALSO has INBOX (e.g. you replied to yourself, or
+      // a thread you started got a reply) still shows here — that's correct.
+      return hasInbox && !hasTrash && !hasSpam;
+    case "sent":
+      // Anything the user sent. Trash wins (a trashed sent thread shouldn't
+      // resurface in Sent), but spam doesn't apply (provider won't tag your
+      // own outgoing mail as spam).
+      return hasSent && !hasTrash;
+    case "archived":
+      // Archived = not currently in INBOX AND not SPAM/TRASH. SENT items
+      // that have been archived (no INBOX) WOULD match here too — that's
+      // intentional; archive is a state, not a folder, so a sent-then-
+      // archived thread legitimately lives in both views.
+      return !hasInbox && !hasTrash && !hasSpam;
+    case "spam":
+      return hasSpam && !hasTrash;
+    case "trash":
+      return hasTrash;
+    case "all":
+      // "All mail" view — everything except trashed.
+      return !hasTrash;
+  }
 }
 
 export async function listThreadsForUser(
@@ -37,6 +103,7 @@ export async function listThreadsForUser(
 ): Promise<{ threads: ThreadRow[]; nextCursor: string | null }> {
   const limit = Math.min(opts.limit ?? 50, 100);
   const sort: InboxSort = opts.sort ?? "priority";
+  const folder: InboxFolder = opts.folder ?? "inbox";
   const accounts = await prisma.mailAccount.findMany({
     where: { userId, ...(opts.accountId ? { id: opts.accountId } : {}) },
     select: { id: true, emailAddress: true },
@@ -74,20 +141,13 @@ export async function listThreadsForUser(
     },
   });
 
-  // Filter to threads currently in the inbox: must have INBOX label AND must
-  // not have TRASH. SQLite + Prisma doesn't expose a clean JSON-array contains
-  // predicate, so we filter in JS — fine for the page-sized result set; the
-  // `deploy-vercel` migration to Postgres can switch to `WHERE labels @>` if
-  // perf demands.
+  // Filter to threads in the selected folder. SQLite + Prisma doesn't expose
+  // a clean JSON-array contains predicate, so we filter in JS — fine for the
+  // page-sized result set; the `deploy-vercel` migration to Postgres can
+  // switch to `WHERE labels @>` if perf demands.
   const inInbox = threads.filter((t) => {
     const labels = Array.isArray(t.labels) ? (t.labels as unknown[]) : [];
-    let hasInbox = false;
-    let hasTrash = false;
-    for (const l of labels) {
-      if (l === "INBOX") hasInbox = true;
-      else if (l === "TRASH") hasTrash = true;
-    }
-    return hasInbox && !hasTrash;
+    return threadMatchesFolder(labels, folder);
   });
 
   // Per-thread candidate message id: the unread set if any, otherwise the
@@ -197,6 +257,78 @@ export async function listThreadsForUser(
   const slice = drafts.slice(0, limit);
 
   return { threads: slice, nextCursor };
+}
+
+// ─── Drafts (separate code path — sources from `Draft` table) ──────────
+//
+// The drafts folder doesn't fit the `Thread`-based `ThreadRow` shape because
+// a draft can be pre-thread (a brand-new compose with `threadId === null`).
+// We return a parallel row type so the UI can render drafts in the same
+// list slot without the Server Action layer pretending drafts are threads.
+
+export interface DraftRow {
+  /// The Draft.id — DOES NOT collide with Thread.id.
+  id: string;
+  accountId: string;
+  accountEmail: string;
+  /// The thread this draft is attached to, if any. `null` for a brand-new
+  /// compose; the row's "Open" link goes to /inbox/compose/new in that case.
+  threadId: string | null;
+  mode: "new" | "reply" | "reply-all" | "forward";
+  subject: string;
+  /// Plain-text preview of the body — keeps the row visually consistent with
+  /// a ThreadRow's `snippet`.
+  snippet: string;
+  /// "To: foo@bar, baz@qux" condensed to a single line — empty if no recipients yet.
+  toLine: string;
+  updatedAt: Date;
+}
+
+/**
+ * List every draft for the user, optionally scoped to one account. Sorted by
+ * `updatedAt DESC` so the freshest draft is at the top. Returns a cap of 100
+ * rows; the drafts folder is small in practice (single-digit per account)
+ * and there's no pagination story for it yet.
+ */
+export async function listDraftsForUser(
+  userId: string,
+  opts: { accountId?: string } = {},
+): Promise<{ drafts: DraftRow[] }> {
+  const rows = await prisma.draft.findMany({
+    where: { userId, ...(opts.accountId ? { accountId: opts.accountId } : {}) },
+    orderBy: { updatedAt: "desc" },
+    take: 100,
+    include: { account: { select: { emailAddress: true } } },
+  });
+
+  const drafts: DraftRow[] = rows.map((r) => {
+    const toArr = Array.isArray(r.to) ? (r.to as Array<{ email?: string }>) : [];
+    const toLine = toArr
+      .map((a) => a.email)
+      .filter((e): e is string => Boolean(e))
+      .join(", ");
+    // Best-effort plain-text snippet from the HTML body. We only strip tags
+    // and collapse whitespace — full sanitization is overkill for a list-row
+    // preview that never gets rendered as HTML.
+    const snippet = String(r.bodyHtml ?? "")
+      .replace(/<[^>]*>/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 240);
+    return {
+      id: r.id,
+      accountId: r.accountId,
+      accountEmail: r.account.emailAddress,
+      threadId: r.threadId,
+      mode: r.mode as DraftRow["mode"],
+      subject: r.subject,
+      snippet,
+      toLine,
+      updatedAt: r.updatedAt,
+    };
+  });
+
+  return { drafts };
 }
 
 export async function getThreadByIdForUser(userId: string, threadId: string) {

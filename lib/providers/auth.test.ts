@@ -398,6 +398,40 @@ describe("getMailboxSecret", () => {
     expect(result.scope).toBe("https://www.googleapis.com/auth/gmail.modify");
   });
 
+  it("translates a hung refresh into AuthError instead of blocking the caller", async () => {
+    // Defense against the "page still loading 20 minutes, no error logs"
+    // failure mode: a slow/unresponsive provider token endpoint must NOT
+    // keep the Server Action's request socket open indefinitely.
+    //
+    // We monkey-patch fetch to immediately throw a TimeoutError, which is
+    // exactly what `AbortSignal.timeout` raises after the 15s budget
+    // expires in production. The assertion is that this exception path
+    // surfaces as AuthError (with `transient: true`), not a raw throw.
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => {
+      const err = new Error("operation timed out") as Error & { name: string };
+      err.name = "TimeoutError";
+      throw err;
+    }) as typeof fetch;
+
+    try {
+      const secret: OAuthMailboxSecret = {
+        kind: "oauth",
+        accessToken: "ya29.STALE",
+        refreshToken: "1//RT-OK",
+        expiresAt: Math.floor(Date.now() / 1000) - 5,
+        scope: "scope",
+      };
+      const { user, row } = await createMailAccountWith(secret);
+      createdAccountIds.push(row.id);
+      createdUserIds.push(user.id);
+
+      await expect(getMailboxSecret(row.id)).rejects.toBeInstanceOf(AuthError);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("never writes the plaintext access token into the ciphertext bytes", async () => {
     const refreshed = await loadFixture<{ access_token: string; expires_in: number }>(
       "oauth.refresh.ok.json",

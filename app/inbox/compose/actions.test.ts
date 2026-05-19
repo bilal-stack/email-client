@@ -1,54 +1,32 @@
 // @vitest-environment node
 import { randomBytes, randomUUID } from "node:crypto";
 import { prisma } from "@/lib/db";
-import { AuthError, RateLimitError } from "@/lib/providers/errors";
-import type { IEmailProvider } from "@/lib/providers/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Mock auth + provider registry BEFORE the actions module is imported so the
-// mocks are in place when the module's top-level imports resolve.
+// Mock auth + inngest.send BEFORE the actions module is imported. The
+// provider registry mock is preserved because `processSendTask` (the
+// worker, exercised in its own test file) uses it; the sendDraft action
+// no longer calls the provider directly post-background-send refactor.
 vi.mock("@/lib/auth", () => ({
   auth: vi.fn(),
 }));
-vi.mock("@/lib/providers", () => ({
-  getProviderForAccount: vi.fn(),
+vi.mock("@/lib/inngest/client", () => ({
+  inngest: { send: vi.fn(async () => undefined) },
 }));
 
 import { auth } from "@/lib/auth";
-import { getProviderForAccount } from "@/lib/providers";
+import { inngest } from "@/lib/inngest/client";
 import { discardDraft, getDraft, sendDraft, upsertDraft } from "./actions";
 
 const authMock = vi.mocked(auth);
-const getProviderMock = vi.mocked(getProviderForAccount);
-
-function makeProvider(overrides: Partial<IEmailProvider> = {}): IEmailProvider {
-  return {
-    listThreads: vi.fn(async () => ({ items: [], nextCursor: null })),
-    getThread: vi.fn(async () => {
-      throw new Error("not used");
-    }),
-    sendMessage: vi.fn(async () => ({ id: "new-msg-id", threadId: "new-thread-id" })),
-    reply: vi.fn(async () => ({ id: "reply-msg-id" })),
-    archive: vi.fn(async () => undefined),
-    trash: vi.fn(async () => undefined),
-    markRead: vi.fn(async () => undefined),
-    setLabels: vi.fn(async () => undefined),
-    search: vi.fn(async () => ({ items: [], nextCursor: null })),
-    syncDelta: vi.fn(async () => ({
-      newMessages: [],
-      changedMessages: [],
-      deletedIds: [],
-      nextCursor: "",
-    })),
-    ...overrides,
-  };
-}
+const inngestSendMock = vi.mocked(inngest.send);
 
 const createdUserIds: string[] = [];
 
 beforeEach(() => {
   authMock.mockReset();
-  getProviderMock.mockReset();
+  inngestSendMock.mockReset();
+  inngestSendMock.mockResolvedValue(undefined as never);
 });
 
 afterEach(async () => {
@@ -368,14 +346,25 @@ describe("getDraft", () => {
   });
 });
 
-// ── sendDraft ─────────────────────────────────────────────────────────────
+// ── sendDraft (background queue) ──────────────────────────────────────────
+//
+// Post-refactor, sendDraft NO LONGER calls the provider directly. It:
+//   1. validates input + attachments
+//   2. sanitizes bodyHtml
+//   3. creates a SendTask row (+ SendTaskAttachment rows)
+//   4. enqueues an Inngest event with just the taskId
+//   5. deletes the existing Draft row (if any)
+//
+// The actual provider call lives in `process-send-task.ts` (worker), which
+// has its own test file. The assertions here verify the queue handoff and
+// the validation cliffs that still belong on the action side.
 
 describe("sendDraft", () => {
-  it("happy path (new compose) — calls provider.sendMessage with the SendDraft, returns ids, deletes the draft row", async () => {
+  it("happy path (new compose) — creates a SendTask, enqueues the worker event, deletes the draft row", async () => {
     const { userId, accountId } = await createUserWithAccount();
     authMock.mockResolvedValue({ user: { id: userId } } as never);
 
-    // Pre-existing draft row that should be deleted on success.
+    // Pre-existing draft row that should be deleted on enqueue success.
     const created = await upsertDraft({
       accountId,
       threadId: null,
@@ -388,10 +377,6 @@ describe("sendDraft", () => {
     });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
-
-    const sendMessage = vi.fn(async () => ({ id: "pm-1", threadId: "pt-1" }));
-    const reply = vi.fn(async () => ({ id: "should-not-call" }));
-    getProviderMock.mockResolvedValue(makeProvider({ sendMessage, reply }));
 
     const fd = makeSendFormData({
       draftId: created.data.draftId,
@@ -406,25 +391,38 @@ describe("sendDraft", () => {
     const result = await sendDraft(fd);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data).toEqual({ providerMessageId: "pm-1", providerThreadId: "pt-1" });
+    expect(typeof result.data.sendTaskId).toBe("string");
 
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    expect(reply).not.toHaveBeenCalled();
+    // SendTask row exists with the right fields, in `queued` state.
+    const task = await prisma.sendTask.findUnique({
+      where: { id: result.data.sendTaskId },
+    });
+    expect(task).not.toBeNull();
+    expect(task?.userId).toBe(userId);
+    expect(task?.accountId).toBe(accountId);
+    expect(task?.mode).toBe("new");
+    expect(task?.status).toBe("queued");
+    expect(task?.subject).toBe("Hi");
 
+    // Inngest worker was enqueued with the task id.
+    expect(inngestSendMock).toHaveBeenCalledTimes(1);
+    const sendCall = inngestSendMock.mock.calls[0];
+    if (!sendCall) throw new Error("expected inngest.send call");
+    const payload = sendCall[0] as { name: string; data: { taskId: string } };
+    expect(payload.name).toBe("inbox/send-task.queued");
+    expect(payload.data.taskId).toBe(result.data.sendTaskId);
+
+    // Draft row is gone — the SendTask carries the body now.
     const draftAfter = await prisma.draft.findUnique({
       where: { id: created.data.draftId },
     });
     expect(draftAfter).toBeNull();
   });
 
-  it("happy path (reply) — calls provider.reply(providerThreadId, ...), NOT sendMessage", async () => {
+  it("happy path (reply) — captures providerThreadId on the SendTask row", async () => {
     const { userId, accountId } = await createUserWithAccount();
     const { threadId, providerThreadId } = await createThread(accountId);
     authMock.mockResolvedValue({ user: { id: userId } } as never);
-
-    const sendMessage = vi.fn(async () => ({ id: "should-not-call", threadId: "x" }));
-    const reply = vi.fn(async () => ({ id: "reply-msg-id" }));
-    getProviderMock.mockResolvedValue(makeProvider({ sendMessage, reply }));
 
     const fd = makeSendFormData({
       accountId,
@@ -440,22 +438,23 @@ describe("sendDraft", () => {
     const result = await sendDraft(fd);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.data.providerMessageId).toBe("reply-msg-id");
-    expect(result.data.providerThreadId).toBe(providerThreadId);
 
-    expect(reply).toHaveBeenCalledTimes(1);
-    const replyCall = reply.mock.calls[0];
-    if (!replyCall) throw new Error("reply expected to be called");
-    expect((replyCall as unknown as [string, unknown])[0]).toBe(providerThreadId);
-    expect(sendMessage).not.toHaveBeenCalled();
+    const task = await prisma.sendTask.findUnique({
+      where: { id: result.data.sendTaskId },
+    });
+    expect(task?.mode).toBe("reply");
+    expect(task?.threadId).toBe(threadId);
+    // Captured at enqueue time so the worker doesn't have to re-fetch.
+    expect(task?.providerThreadId).toBe(providerThreadId);
+    // The most-recent inReplyTo is preserved on the task row (only the
+    // last id is used at MIME-build time, but the worker still expects it
+    // to round-trip).
+    expect(task?.inReplyTo).toBe("msg-1");
   });
 
-  it("outbound sanitization — strips <script> from bodyHtml before passing to the adapter (defense-in-depth)", async () => {
+  it("outbound sanitization — strips <script> from bodyHtml on the persisted SendTask row", async () => {
     const { userId, accountId } = await createUserWithAccount();
     authMock.mockResolvedValue({ user: { id: userId } } as never);
-
-    const sendMessage = vi.fn(async () => ({ id: "pm-2", threadId: "pt-2" }));
-    getProviderMock.mockResolvedValue(makeProvider({ sendMessage }));
 
     const fd = makeSendFormData({
       accountId,
@@ -467,21 +466,21 @@ describe("sendDraft", () => {
 
     const result = await sendDraft(fd);
     expect(result.ok).toBe(true);
+    if (!result.ok) return;
 
-    expect(sendMessage).toHaveBeenCalledTimes(1);
-    const sendCall = sendMessage.mock.calls[0];
-    if (!sendCall) throw new Error("sendMessage expected to be called");
-    const draftArg = (sendCall as unknown as [{ bodyHtml: string }])[0];
-    expect(draftArg.bodyHtml).not.toMatch(/<script\b/i);
-    expect(draftArg.bodyHtml).toContain("<p>hi</p>");
+    const task = await prisma.sendTask.findUnique({
+      where: { id: result.data.sendTaskId },
+    });
+    // Sanitization must happen BEFORE persistence — the worker passes the
+    // stored bodyHtml straight to the provider, so anything we don't
+    // strip here goes out over the wire verbatim.
+    expect(task?.bodyHtml).not.toMatch(/<script\b/i);
+    expect(task?.bodyHtml).toContain("<p>hi</p>");
   });
 
-  it("attachment too large — returns 25 MB error, provider NOT called", async () => {
+  it("attachment too large — returns 25 MB error, NO SendTask row created, NO event enqueued", async () => {
     const { userId, accountId } = await createUserWithAccount();
     authMock.mockResolvedValue({ user: { id: userId } } as never);
-
-    const sendMessage = vi.fn(async () => ({ id: "no", threadId: "no" }));
-    getProviderMock.mockResolvedValue(makeProvider({ sendMessage }));
 
     // Two 13 MB files = 26 MB > 25 MB cap.
     const big = (size: number, name: string) =>
@@ -499,15 +498,13 @@ describe("sendDraft", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toMatch(/25 MB/);
-    expect(sendMessage).not.toHaveBeenCalled();
+    expect(inngestSendMock).not.toHaveBeenCalled();
+    expect(await prisma.sendTask.count({ where: { userId } })).toBe(0);
   });
 
-  it("denied MIME — returns blocked error, provider NOT called", async () => {
+  it("denied MIME — returns blocked error, NO SendTask row created", async () => {
     const { userId, accountId } = await createUserWithAccount();
     authMock.mockResolvedValue({ user: { id: userId } } as never);
-
-    const sendMessage = vi.fn(async () => ({ id: "no", threadId: "no" }));
-    getProviderMock.mockResolvedValue(makeProvider({ sendMessage }));
 
     const evil = new File([new Uint8Array(10)], "evil.exe", {
       type: "application/x-msdownload",
@@ -525,16 +522,13 @@ describe("sendDraft", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toMatch(/blocked/);
-    expect(sendMessage).not.toHaveBeenCalled();
+    expect(inngestSendMock).not.toHaveBeenCalled();
   });
 
-  it("accountId not owned by user — rejects, provider NOT called", async () => {
+  it("accountId not owned by user — rejects, no enqueue", async () => {
     const a = await createUserWithAccount();
     const b = await createUserWithAccount();
     authMock.mockResolvedValue({ user: { id: a.userId } } as never);
-
-    const sendMessage = vi.fn(async () => ({ id: "no", threadId: "no" }));
-    getProviderMock.mockResolvedValue(makeProvider({ sendMessage }));
 
     const fd = makeSendFormData({
       accountId: b.accountId, // not owned by user A
@@ -547,34 +541,51 @@ describe("sendDraft", () => {
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error).toMatch(/Account not found|Forbidden/);
-    expect(sendMessage).not.toHaveBeenCalled();
+    expect(inngestSendMock).not.toHaveBeenCalled();
   });
 
-  it("provider throws AuthError — returns its message AND draft row is preserved", async () => {
+  it("attachment bytes persist to the SendTaskAttachment table so the worker can stream them later", async () => {
     const { userId, accountId } = await createUserWithAccount();
     authMock.mockResolvedValue({ user: { id: userId } } as never);
 
-    // Pre-existing draft row that MUST survive the failed send.
-    const created = await upsertDraft({
+    const f = new File([Buffer.from("hello-attachment", "utf8")], "note.txt", {
+      type: "text/plain",
+    });
+
+    const fd = makeSendFormData({
       accountId,
       threadId: null,
       mode: "new",
       to: [{ email: "rcpt@example.com" }],
-      cc: [],
-      bcc: [],
-      subject: "Hi",
-      bodyHtml: "<p>hello</p>",
+      attachments: [f],
     });
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
 
-    const sendMessage = vi.fn(async () => {
-      throw new AuthError("Reconnect Google account");
+    const result = await sendDraft(fd);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    const attachments = await prisma.sendTaskAttachment.findMany({
+      where: { taskId: result.data.sendTaskId },
     });
-    getProviderMock.mockResolvedValue(makeProvider({ sendMessage }));
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]?.filename).toBe("note.txt");
+    expect(attachments[0]?.mimeType).toBe("text/plain");
+    // Byte-perfect round-trip — the worker's RFC 2822 builder needs this.
+    expect(Buffer.from(attachments[0]?.content ?? []).toString("utf8")).toBe(
+      "hello-attachment",
+    );
+  });
+
+  it("inngest.send failure rolls back to a user-actionable error; SendTask row remains for diagnosis", async () => {
+    // If the Inngest dev server is down, sendDraft should report that
+    // failure cleanly (not 500). The row stays around so a future "reaper"
+    // / retry path can pick it up; the user just resubmits.
+    const { userId, accountId } = await createUserWithAccount();
+    authMock.mockResolvedValue({ user: { id: userId } } as never);
+
+    inngestSendMock.mockRejectedValueOnce(new Error("inngest unreachable"));
 
     const fd = makeSendFormData({
-      draftId: created.data.draftId,
       accountId,
       threadId: null,
       mode: "new",
@@ -584,69 +595,16 @@ describe("sendDraft", () => {
     const result = await sendDraft(fd);
     expect(result.ok).toBe(false);
     if (result.ok) return;
-    // Public error is the fixed canonical reconnect string — never the raw
-    // provider message (which Graph can fill with tenant detail).
-    expect(result.error).toBe("Please reconnect this account to continue.");
-    // Defensive: the raw provider phrase is NOT leaked.
-    expect(result.error).not.toContain("Google");
-    expect(sendMessage).toHaveBeenCalledTimes(1);
+    expect(result.error).toMatch(/queue/i);
 
-    // CRITICAL: the user's work survives a send failure.
-    const survivor = await prisma.draft.findUnique({
-      where: { id: created.data.draftId },
-    });
-    expect(survivor).not.toBeNull();
-  });
-
-  it("provider throws RateLimitError — draft is preserved", async () => {
-    const { userId, accountId } = await createUserWithAccount();
-    authMock.mockResolvedValue({ user: { id: userId } } as never);
-
-    const created = await upsertDraft({
-      accountId,
-      threadId: null,
-      mode: "new",
-      to: [{ email: "rcpt@example.com" }],
-      cc: [],
-      bcc: [],
-      subject: "Hi",
-      bodyHtml: "<p>hello</p>",
-    });
-    expect(created.ok).toBe(true);
-    if (!created.ok) return;
-
-    const sendMessage = vi.fn(async () => {
-      throw new RateLimitError("Rate limited, retry later", 30);
-    });
-    getProviderMock.mockResolvedValue(makeProvider({ sendMessage }));
-
-    const fd = makeSendFormData({
-      draftId: created.data.draftId,
-      accountId,
-      threadId: null,
-      mode: "new",
-      to: [{ email: "rcpt@example.com" }],
-    });
-
-    const result = await sendDraft(fd);
-    expect(result.ok).toBe(false);
-    if (result.ok) return;
-    // Canonical wait-and-retry phrase — the original retry-after value (30s)
-    // is intentionally not surfaced; the user just retries when they're ready.
-    expect(result.error).toBe("Too many requests. Please wait a moment and try again.");
-
-    const survivor = await prisma.draft.findUnique({
-      where: { id: created.data.draftId },
-    });
-    expect(survivor).not.toBeNull();
+    // Row was already inserted — confirms the action returned a clean
+    // public message rather than letting the inngest exception bubble.
+    expect(await prisma.sendTask.count({ where: { userId } })).toBe(1);
   });
 
   it("Zod rejects an invalid mode value", async () => {
     const { userId, accountId } = await createUserWithAccount();
     authMock.mockResolvedValue({ user: { id: userId } } as never);
-
-    const sendMessage = vi.fn(async () => ({ id: "no", threadId: "no" }));
-    getProviderMock.mockResolvedValue(makeProvider({ sendMessage }));
 
     const fd = new FormData();
     fd.set("accountId", accountId);
@@ -660,6 +618,6 @@ describe("sendDraft", () => {
 
     const result = await sendDraft(fd);
     expect(result.ok).toBe(false);
-    expect(sendMessage).not.toHaveBeenCalled();
+    expect(inngestSendMock).not.toHaveBeenCalled();
   });
 });

@@ -15,7 +15,7 @@ interface SearchPageProps {
 
 export default async function SearchPage({ searchParams }: SearchPageProps) {
   const session = await auth();
-  if (!session?.user?.id) redirect("/signin");
+  if (!session?.user?.id) redirect("/login");
 
   const { q = "", account } = await searchParams;
   const trimmed = q.trim();

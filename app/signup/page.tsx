@@ -1,26 +1,12 @@
 import { ImapSignInForm } from "@/app/signin/_components/imap-signin-form";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { SubmitButton } from "@/components/ui/submit-button";
-import { setAddMailboxIntent } from "@/lib/auth/add-mailbox-cookie";
 import { auth, signIn } from "@/lib/auth";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
-// `/signin` now only serves the "add another mailbox" flow (must be invoked
-// with `?add=1`). Fresh sign-ins go through `/login`; new-account creation
-// through `/signup`. We keep this route name because the inbox UI links to
-// `/signin?add=1` from the AccountSwitcher's "Add mailbox" pill.
-//
-// Without `?add=1`, anonymous visitors get bounced to `/login` and signed-in
-// users get bounced to `/inbox` — both are the right "where did you mean to
-// go?" outcomes for someone hitting this URL directly.
-
-interface SignInPageProps {
-  searchParams: Promise<{
-    callbackUrl?: string;
-    error?: string;
-    /** `?add=1` — required for this page to render at all. */
-    add?: string;
-  }>;
+interface SignupPageProps {
+  searchParams: Promise<{ callbackUrl?: string; error?: string }>;
 }
 
 function describeError(code: string | undefined): string | null {
@@ -29,60 +15,35 @@ function describeError(code: string | undefined): string | null {
     case "ScopeMissing":
       return "You signed in but didn't grant Gmail access. The app needs the Gmail permission to read and send mail. Click Continue with Google and accept the Gmail permission this time.";
     case "AccessDenied":
-      return "Sign-in was cancelled or denied. Try again and grant the requested permissions.";
+      return "Sign-up was cancelled or denied. Try again and grant the requested permissions.";
     case "Configuration":
       return "The server is misconfigured (likely a missing env var). Check the dev server console for details.";
     case "CredentialsSignin":
       return "Couldn't connect with those IMAP credentials. Double-check the app password (16 chars, no spaces) and the IMAP / SMTP host.";
-    case "AccountConflict":
-      return "That mailbox is already connected to a different account on this app. If both accounts are yours, sign out and back in with the other one to access it.";
     default:
-      return `Sign-in failed: ${code}`;
+      return `Sign-up failed: ${code}`;
   }
 }
 
-export default async function SignInPage({ searchParams }: SignInPageProps) {
-  const { callbackUrl = "/inbox", error, add } = await searchParams;
-  const isAddingAccount = add === "1";
-
-  // No `?add=1`? Route the user to the appropriate first-class entry.
-  if (!isAddingAccount) {
-    const session = await auth();
-    redirect(session?.user ? "/inbox" : "/login");
-  }
-
-  // Adding a mailbox requires an active session — otherwise there's nothing
-  // to add the mailbox TO. Send anonymous visitors to /login instead.
+export default async function SignupPage({ searchParams }: SignupPageProps) {
+  const { callbackUrl = "/inbox", error } = await searchParams;
+  // Already signed in? Send them to the inbox; sign-up doesn't apply.
   const session = await auth();
-  if (!session?.user) {
-    redirect("/login");
+  if (session?.user) {
+    redirect(callbackUrl.startsWith("/") ? callbackUrl : "/inbox");
   }
-  // Capture the active session's userId now — we pass it through the
-  // OAuth round-trip via a short-lived cookie. The signin callback uses
-  // it to target the MailAccount upsert at THIS user (not whichever User
-  // PrismaAdapter might create/resolve from the new provider's profile).
-  const activeUserId = session.user.id;
-  if (!activeUserId) {
-    // Defensive — shouldn't happen given the check above, but keeps the
-    // type narrow before we hand it to the cookie helper.
-    redirect("/login");
-  }
-
   const errorMessage = describeError(error);
 
   async function googleSignIn() {
     "use server";
-    await setAddMailboxIntent(activeUserId);
     await signIn("google", { redirectTo: callbackUrl });
   }
   async function microsoftSignIn() {
     "use server";
-    await setAddMailboxIntent(activeUserId);
     await signIn("microsoft-entra-id", { redirectTo: callbackUrl });
   }
   async function imapSignIn(formData: FormData) {
     "use server";
-    await setAddMailboxIntent(activeUserId);
     await signIn("imap", {
       redirectTo: callbackUrl,
       emailAddress: formData.get("emailAddress"),
@@ -96,10 +57,10 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
     <main className="mx-auto flex min-h-screen max-w-md flex-col items-stretch justify-center px-6 py-12">
       <Card>
         <CardHeader>
-          <CardTitle>Connect another mailbox</CardTitle>
+          <CardTitle>Create your account</CardTitle>
           <CardDescription>
-            Link an additional Gmail, Office 365, or IMAP account to your existing session. Tokens
-            are encrypted at rest.
+            Pick the provider for your first mailbox. We'll use that email as your account
+            identifier — you can add more providers later from your inbox.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -126,6 +87,13 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
             </SubmitButton>
           </form>
           <ImapSignInForm action={imapSignIn} />
+          <p className="pt-3 text-center text-sm text-zinc-600">
+            Already have an account?{" "}
+            <Link href="/login" className="font-medium text-zinc-900 underline">
+              Log in
+            </Link>
+            .
+          </p>
         </CardContent>
       </Card>
     </main>

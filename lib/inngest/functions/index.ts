@@ -5,10 +5,12 @@ import { gmailSyncDelta } from "./gmail-sync";
 import { graphSyncDelta } from "./graph-sync";
 import { imapSyncPoll } from "./imap-sync";
 import { prioritizeMessageFn } from "./prioritize-message";
+import { processSendTaskFn } from "./process-send-task";
 
 export const inngestFunctions = [
   gmailSyncDelta,
   graphSyncDelta,
   imapSyncPoll,
   prioritizeMessageFn,
+  processSendTaskFn,
 ];

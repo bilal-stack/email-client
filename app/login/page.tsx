@@ -1,26 +1,12 @@
 import { ImapSignInForm } from "@/app/signin/_components/imap-signin-form";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { SubmitButton } from "@/components/ui/submit-button";
-import { setAddMailboxIntent } from "@/lib/auth/add-mailbox-cookie";
 import { auth, signIn } from "@/lib/auth";
+import Link from "next/link";
 import { redirect } from "next/navigation";
 
-// `/signin` now only serves the "add another mailbox" flow (must be invoked
-// with `?add=1`). Fresh sign-ins go through `/login`; new-account creation
-// through `/signup`. We keep this route name because the inbox UI links to
-// `/signin?add=1` from the AccountSwitcher's "Add mailbox" pill.
-//
-// Without `?add=1`, anonymous visitors get bounced to `/login` and signed-in
-// users get bounced to `/inbox` — both are the right "where did you mean to
-// go?" outcomes for someone hitting this URL directly.
-
-interface SignInPageProps {
-  searchParams: Promise<{
-    callbackUrl?: string;
-    error?: string;
-    /** `?add=1` — required for this page to render at all. */
-    add?: string;
-  }>;
+interface LoginPageProps {
+  searchParams: Promise<{ callbackUrl?: string; error?: string }>;
 }
 
 function describeError(code: string | undefined): string | null {
@@ -34,55 +20,30 @@ function describeError(code: string | undefined): string | null {
       return "The server is misconfigured (likely a missing env var). Check the dev server console for details.";
     case "CredentialsSignin":
       return "Couldn't connect with those IMAP credentials. Double-check the app password (16 chars, no spaces) and the IMAP / SMTP host.";
-    case "AccountConflict":
-      return "That mailbox is already connected to a different account on this app. If both accounts are yours, sign out and back in with the other one to access it.";
     default:
       return `Sign-in failed: ${code}`;
   }
 }
 
-export default async function SignInPage({ searchParams }: SignInPageProps) {
-  const { callbackUrl = "/inbox", error, add } = await searchParams;
-  const isAddingAccount = add === "1";
-
-  // No `?add=1`? Route the user to the appropriate first-class entry.
-  if (!isAddingAccount) {
-    const session = await auth();
-    redirect(session?.user ? "/inbox" : "/login");
-  }
-
-  // Adding a mailbox requires an active session — otherwise there's nothing
-  // to add the mailbox TO. Send anonymous visitors to /login instead.
+export default async function LoginPage({ searchParams }: LoginPageProps) {
+  const { callbackUrl = "/inbox", error } = await searchParams;
+  // Already signed in? Skip the picker.
   const session = await auth();
-  if (!session?.user) {
-    redirect("/login");
+  if (session?.user) {
+    redirect(callbackUrl.startsWith("/") ? callbackUrl : "/inbox");
   }
-  // Capture the active session's userId now — we pass it through the
-  // OAuth round-trip via a short-lived cookie. The signin callback uses
-  // it to target the MailAccount upsert at THIS user (not whichever User
-  // PrismaAdapter might create/resolve from the new provider's profile).
-  const activeUserId = session.user.id;
-  if (!activeUserId) {
-    // Defensive — shouldn't happen given the check above, but keeps the
-    // type narrow before we hand it to the cookie helper.
-    redirect("/login");
-  }
-
   const errorMessage = describeError(error);
 
   async function googleSignIn() {
     "use server";
-    await setAddMailboxIntent(activeUserId);
     await signIn("google", { redirectTo: callbackUrl });
   }
   async function microsoftSignIn() {
     "use server";
-    await setAddMailboxIntent(activeUserId);
     await signIn("microsoft-entra-id", { redirectTo: callbackUrl });
   }
   async function imapSignIn(formData: FormData) {
     "use server";
-    await setAddMailboxIntent(activeUserId);
     await signIn("imap", {
       redirectTo: callbackUrl,
       emailAddress: formData.get("emailAddress"),
@@ -96,10 +57,10 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
     <main className="mx-auto flex min-h-screen max-w-md flex-col items-stretch justify-center px-6 py-12">
       <Card>
         <CardHeader>
-          <CardTitle>Connect another mailbox</CardTitle>
+          <CardTitle>Log in</CardTitle>
           <CardDescription>
-            Link an additional Gmail, Office 365, or IMAP account to your existing session. Tokens
-            are encrypted at rest.
+            Pick the provider you signed up with. We'll resume your account and bring back your
+            connected mailboxes.
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -126,6 +87,13 @@ export default async function SignInPage({ searchParams }: SignInPageProps) {
             </SubmitButton>
           </form>
           <ImapSignInForm action={imapSignIn} />
+          <p className="pt-3 text-center text-sm text-zinc-600">
+            New here?{" "}
+            <Link href="/signup" className="font-medium text-zinc-900 underline">
+              Create an account
+            </Link>
+            .
+          </p>
         </CardContent>
       </Card>
     </main>

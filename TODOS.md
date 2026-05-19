@@ -40,6 +40,37 @@ All cases from `.agent-os/specs/2026-05-17-graph-provider/sub-specs/tests.md` ar
 - ~~**Pin minimum TLS version on IMAP/SMTP clients.**~~ ✅ Resolved. `tls: { minVersion: "TLSv1.2" }` passed to imapflow in both call sites (`lib/auth/index.ts` and `lib/providers/imap.ts`) and to nodemailer's `createTransport`.
 - ~~**`NODE_ENV` read at module-load time in `imap-host-guard.ts`.**~~ ✅ Documented + handled. `lib/auth/imap-host-guard.test.ts` uses `vi.stubEnv("NODE_ENV", "production")` + `vi.resetModules()` before dynamic import per dev/prod case.
 
+## Tests owed for the recent auth + inbox changes
+
+The auth refactor and inbox-delete-invalidation work landed without
+matching test updates per the user's "don't test/build, just edit"
+instruction during testing. Once stabilized, write / update:
+
+- `lib/auth/signin-callback.test.ts` — add cases for:
+  - Cross-user `MailAccount` conflict (OAuth email belongs to a different
+    `User` → returns `"/signin?error=AccountConflict"`).
+  - The `waitForUserVisibility` 600 ms poll budget (mocks a delayed User
+    write; asserts the poll succeeds within budget).
+  - `allowDangerousEmailAccountLinking: true` integration test —
+    confirm signing in with a second provider for the same email links
+    to the existing User rather than throwing OAuthAccountNotLinked.
+
+- `app/inbox/_components/thread-list-row.test.tsx` (NEW, if writing) —
+  after `onArchive` / `onTrash` success the row disappears from the
+  rendered list (verifies `queryClient.invalidateQueries` fires the
+  refetch). Skip unless test-author capacity allows; manual smoke
+  already covers it.
+
+- `app/login/page.test.tsx`, `app/signup/page.test.tsx` — assert the
+  two new pages render the three provider buttons and link to each
+  other in the footer. Light-touch render tests.
+
+- `app/signin/page.test.tsx` — regression: visiting without `?add=1`
+  redirects (302) to `/login` if no session, `/inbox` if session.
+
+Captured here, deferred until the auth flow is stable in manual
+testing.
+
 ## Deploy-vercel — manual steps owed at deploy time
 
 Not bugs, just user actions documented in `docs/deploy.md`:

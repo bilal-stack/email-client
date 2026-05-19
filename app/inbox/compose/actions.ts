@@ -11,11 +11,11 @@ import {
 } from "@/lib/compose/draft-queries";
 import { validateAttachments } from "@/lib/compose/upload-guard";
 import { prisma } from "@/lib/db";
+import { createSendTask } from "@/lib/db/send-tasks";
 import { sanitizeEmailHtml } from "@/lib/email-html/sanitize";
-import { getProviderForAccount } from "@/lib/providers";
-import { canonicalizeProviderError } from "@/lib/providers/canonical-errors";
-import { ProviderError } from "@/lib/providers/errors";
-import type { CanonicalAddress, SendDraft } from "@/lib/providers/types";
+import { INBOX_SEND_TASK_QUEUED } from "@/lib/inngest/events";
+import { inngest } from "@/lib/inngest/client";
+import type { CanonicalAddress } from "@/lib/providers/types";
 import { z } from "zod";
 
 type Action<T> = Promise<{ ok: true; data: T } | { ok: false; error: string }>;
@@ -151,9 +151,18 @@ function parseJsonField<T>(fd: FormData, key: string, fallback: T): T {
   }
 }
 
+/**
+ * Enqueue a send. The actual provider call happens in the
+ * `process-send-task` Inngest worker — this action is intentionally fast
+ * (no upload time, no Gmail API round-trip) so the user's "Send" click
+ * returns instantly.
+ *
+ * Returns the `sendTaskId` so the UI can correlate SSE completion events
+ * back to the toast / outbox row it's showing.
+ */
 export async function sendDraft(
   formData: FormData,
-): Action<{ providerMessageId: string; providerThreadId: string }> {
+): Action<{ sendTaskId: string }> {
   const session = await auth();
   if (!session?.user?.id) return { ok: false, error: "Unauthorized" };
   const userId = session.user.id;
@@ -179,6 +188,10 @@ export async function sendDraft(
     return { ok: false, error: first?.message ?? "Invalid input" };
   }
 
+  // Attachment validation MUST run inline — it's the cheap defense against
+  // a 5GB upload pinning the SendTask row. Bytes get pulled into Buffers
+  // here and persisted into the SendTaskAttachment table; the worker
+  // streams them out at send time without re-reading the original Files.
   const files = formData.getAll("attachments").filter((v): v is File => v instanceof File);
   const attachmentsResult = await validateAttachments(files);
   if (!attachmentsResult.ok) return { ok: false, error: attachmentsResult.error };
@@ -189,6 +202,9 @@ export async function sendDraft(
   });
   if (!account) return { ok: false, error: "Account not found" };
 
+  // Capture providerThreadId at enqueue time so the worker doesn't have to
+  // re-read it later. A thread deleted in-flight between enqueue and worker
+  // run no longer blocks the send.
   let providerThreadId: string | null = null;
   if (parsed.data.threadId) {
     const thread = await prisma.thread.findFirst({
@@ -199,59 +215,211 @@ export async function sendDraft(
     providerThreadId = thread.providerThreadId;
   }
 
+  // Sanitize HTML inline — sanitize-html is sync-ish and fast, and we want
+  // a single source of truth for the cleaned body that goes into the DB
+  // (so a retry doesn't re-sanitize and risk a different result).
   const sanitizedHtml = await sanitizeEmailHtml(parsed.data.bodyHtml);
 
-  const draft: SendDraft = {
+  // Persist the SendTask + attachment bytes, then enqueue the Inngest
+  // event. We do NOT optimistically write the Message row yet — the
+  // recordSentMessage call lives inside the worker so the (Thread,
+  // Message, label) state only flips after the provider has actually
+  // accepted the send. The UI shows "Sending…" off of the SendTask row.
+  const { taskId } = await createSendTask({
+    userId,
+    accountId: parsed.data.accountId,
+    mode: parsed.data.mode,
+    threadId: parsed.data.threadId,
+    providerThreadId,
     to: parsed.data.to,
-    cc: parsed.data.cc.length > 0 ? parsed.data.cc : undefined,
-    bcc: parsed.data.bcc.length > 0 ? parsed.data.bcc : undefined,
+    cc: parsed.data.cc,
+    bcc: parsed.data.bcc,
     subject: parsed.data.subject,
     bodyHtml: sanitizedHtml,
     inReplyTo:
       parsed.data.inReplyTo && parsed.data.inReplyTo.length > 0
-        ? parsed.data.inReplyTo[parsed.data.inReplyTo.length - 1]
-        : undefined,
-    references:
-      parsed.data.references && parsed.data.references.length > 0
-        ? parsed.data.references
-        : undefined,
-    attachments:
-      attachmentsResult.attachments.length > 0 ? attachmentsResult.attachments : undefined,
+        ? (parsed.data.inReplyTo[parsed.data.inReplyTo.length - 1] ?? null)
+        : null,
+    references: parsed.data.references ?? [],
+    attachments: attachmentsResult.attachments.map((a) => ({
+      filename: a.filename,
+      mimeType: a.mimeType,
+      // `SendAttachment` doesn't carry an explicit `size` — derive it from
+      // the byte buffer so the worker can render a "12 KB" hint without
+      // re-streaming the bytes.
+      size: a.content.byteLength,
+      content: a.content,
+    })),
+  });
+
+  // Enqueue last — if this throws, the orphaned SendTask row will sit in
+  // status='queued' until manually reaped. Cheap, simple recovery target
+  // for a future "outbox" UI; for now the worker can re-pick on
+  // restart-via-cron if we add one.
+  try {
+    await inngest.send({
+      name: INBOX_SEND_TASK_QUEUED,
+      data: { taskId, userId, accountId: parsed.data.accountId },
+    });
+  } catch (e) {
+    // Inngest is down / unreachable. Surface a retryable error and leave
+    // the task row in place — the user can resubmit (which dedupes via
+    // the draft row, but creates a new SendTask; that's acceptable for
+    // dev). We don't expose the underlying message.
+    const err = e as { name?: string; message?: string } | undefined;
+    console.warn("inngest.send failed", { name: err?.name, message: err?.message });
+    return {
+      ok: false,
+      error:
+        "Couldn't queue your message right now. Please try again in a moment.",
+    };
+  }
+
+  // Discard the draft now that it's safely captured in a SendTask. If the
+  // background send fails, the SendTask row holds the body, so the user
+  // can retry from the outbox UI without re-typing.
+  if (parsed.data.draftId) {
+    try {
+      await deleteDraftForUser(userId, parsed.data.draftId);
+    } catch (e) {
+      const err = e as { name?: string; message?: string } | undefined;
+      console.warn("deleteDraftForUser failed", {
+        name: err?.name,
+        message: err?.message,
+      });
+    }
+  }
+
+  return { ok: true, data: { sendTaskId: taskId } };
+}
+
+// ─── Outbox (in-flight SendTask) management ─────────────────────────────
+//
+// These actions back the small "outbox" status surface in the layout: a
+// list of tasks currently queued / sending / failed, plus the two recovery
+// affordances we offer (retry / discard). The list is intentionally tiny —
+// successful tasks delete themselves, so the only rows here are work-in-
+// progress or work the user needs to act on.
+
+export interface OutboxTaskDTO {
+  id: string;
+  accountId: string;
+  status: "queued" | "sending" | "failed";
+  subject: string;
+  /// `null` for queued/sending — populated only once the worker has given
+  /// up and persisted a canonical error string.
+  error: string | null;
+  /// Most recent state-flip timestamp; the row sorts by this for display.
+  updatedAt: Date;
+}
+
+/**
+ * List the user's in-flight (queued / sending / failed) send tasks. The
+ * UI polls / SSE-invalidates this so the outbox pill stays current.
+ */
+export async function listPendingSendTasks(): Action<{ tasks: OutboxTaskDTO[] }> {
+  const session = await auth();
+  if (!session?.user?.id) return { ok: false, error: "Unauthorized" };
+  const rows = await prisma.sendTask.findMany({
+    where: { userId: session.user.id, status: { in: ["queued", "sending", "failed"] } },
+    select: {
+      id: true,
+      accountId: true,
+      status: true,
+      subject: true,
+      error: true,
+      updatedAt: true,
+    },
+    orderBy: { updatedAt: "desc" },
+    take: 25,
+  });
+  return {
+    ok: true,
+    data: {
+      tasks: rows.map((r) => ({
+        id: r.id,
+        accountId: r.accountId,
+        status: r.status as OutboxTaskDTO["status"],
+        subject: r.subject,
+        error: r.error,
+        updatedAt: r.updatedAt,
+      })),
+    },
   };
+}
+
+const taskIdSchema = z.object({ taskId: z.string().cuid() });
+
+/**
+ * Re-enqueue a failed send. We flip the task status back to "queued",
+ * null out the error, and emit the same Inngest event the original send
+ * did. The worker picks it up exactly as if it were a fresh task.
+ */
+export async function retrySendTask(
+  input: z.infer<typeof taskIdSchema>,
+): Action<Record<string, never>> {
+  const session = await auth();
+  if (!session?.user?.id) return { ok: false, error: "Unauthorized" };
+  const parsed = taskIdSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Invalid input" };
+
+  // Ownership check + status read in one go. We refuse to retry anything
+  // already in flight (queued / sending) — that's a no-op pretending to
+  // be a retry, which is more confusing than rejecting.
+  const task = await prisma.sendTask.findFirst({
+    where: { id: parsed.data.taskId, userId: session.user.id },
+    select: { id: true, status: true, accountId: true, userId: true },
+  });
+  if (!task) return { ok: false, error: "Task not found" };
+  if (task.status !== "failed") {
+    return { ok: false, error: "This message isn't in a failed state." };
+  }
+
+  await prisma.sendTask.update({
+    where: { id: task.id },
+    data: { status: "queued", error: null },
+  });
 
   try {
-    const provider = await getProviderForAccount(parsed.data.accountId);
-    if (parsed.data.mode === "new" || providerThreadId === null) {
-      const result = await provider.sendMessage(draft);
-      if (parsed.data.draftId) {
-        await deleteDraftForUser(userId, parsed.data.draftId);
-      }
-      return {
-        ok: true,
-        data: { providerMessageId: result.id, providerThreadId: result.threadId },
-      };
-    }
-    const result = await provider.reply(providerThreadId, draft);
-    if (parsed.data.draftId) {
-      await deleteDraftForUser(userId, parsed.data.draftId);
-    }
-    return {
-      ok: true,
-      data: { providerMessageId: result.id, providerThreadId },
-    };
+    await inngest.send({
+      name: INBOX_SEND_TASK_QUEUED,
+      data: { taskId: task.id, userId: task.userId, accountId: task.accountId },
+    });
   } catch (e) {
-    // Draft row deliberately preserved on send failure — the user keeps their
-    // work and can retry. See spec.md risk #10.
-    //
-    // Never echo `e.message` verbatim. The Graph adapter's `pickMessage` (and
-    // any future provider with a verbose error envelope) can carry tenant ids
-    // or request ids the user shouldn't see. `canonicalizeProviderError` maps
-    // each ProviderError subclass to a fixed action-flavored string.
-    if (e instanceof ProviderError) {
-      return { ok: false, error: canonicalizeProviderError(e, "send") };
-    }
-    return { ok: false, error: "Failed to send. Please try again." };
+    const err = e as { name?: string; message?: string } | undefined;
+    console.warn("inngest.send (retry) failed", { name: err?.name, message: err?.message });
+    // Roll the status back so the UI doesn't get stuck showing "queued"
+    // forever — the user can press retry again.
+    await prisma.sendTask
+      .update({ where: { id: task.id }, data: { status: "failed" } })
+      .catch(() => {});
+    return {
+      ok: false,
+      error: "Couldn't queue the retry right now. Please try again in a moment.",
+    };
   }
+  return { ok: true, data: {} };
+}
+
+/**
+ * Discard a failed (or stuck queued) send. Deletes the SendTask row and
+ * its attachments via cascade.
+ */
+export async function discardSendTask(
+  input: z.infer<typeof taskIdSchema>,
+): Action<Record<string, never>> {
+  const session = await auth();
+  if (!session?.user?.id) return { ok: false, error: "Unauthorized" };
+  const parsed = taskIdSchema.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Invalid input" };
+
+  // Ownership-scoped delete. `deleteMany` returns count==0 silently when
+  // the row doesn't exist or belongs to someone else, which is the
+  // no-leak behavior we want.
+  await prisma.sendTask.deleteMany({
+    where: { id: parsed.data.taskId, userId: session.user.id },
+  });
+  return { ok: true, data: {} };
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────

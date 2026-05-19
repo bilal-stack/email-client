@@ -1,6 +1,8 @@
 "use client";
 
 import { cn } from "@/lib/utils";
+import { Plus } from "lucide-react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useTransition } from "react";
 
@@ -43,7 +45,7 @@ export function AccountSwitcher({ accounts, active }: AccountSwitcherProps) {
     <div
       role="tablist"
       aria-label="Filter by account"
-      className="flex flex-wrap gap-2"
+      className="flex flex-wrap items-center gap-2"
       aria-busy={isPending}
     >
       {chips.map((c) => {
@@ -77,6 +79,19 @@ export function AccountSwitcher({ accounts, active }: AccountSwitcherProps) {
           </button>
         );
       })}
+      <Link
+        href="/signin?add=1"
+        aria-label="Connect another mailbox"
+        title="Connect another mailbox"
+        className={cn(
+          "inline-flex min-h-[44px] items-center gap-1.5 rounded-full border border-dashed border-zinc-300 px-4 py-2 text-sm text-zinc-600 transition-colors",
+          "hover:border-zinc-400 hover:bg-zinc-50 hover:text-zinc-900",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-zinc-900 focus-visible:ring-offset-2",
+        )}
+      >
+        <Plus className="h-4 w-4" aria-hidden="true" />
+        <span className="font-medium">Add mailbox</span>
+      </Link>
     </div>
   );
 }

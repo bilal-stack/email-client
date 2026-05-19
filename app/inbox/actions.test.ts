@@ -24,6 +24,7 @@ import {
   getLabelsForThreads,
   getThread,
   listAvailableLabels,
+  listDraftsAction,
   listThreads,
   markThreadRead,
   searchThreads,
@@ -212,6 +213,78 @@ describe("listThreads", () => {
 
     const bad2 = await listThreads({ accountId: "not-a-cuid" });
     expect(bad2).toEqual({ ok: false, error: "Invalid input" });
+  });
+
+  it("forwards the folder param through to the query layer", async () => {
+    // listThreadsForUser already has folder-by-folder coverage in its own
+    // test file; this case just proves the Server Action wires the param
+    // through (rather than dropping it on the floor pre-Zod or post-Zod).
+    const { userId, accountId } = await createUserWithAccount();
+    authMock.mockResolvedValue({ user: { id: userId } } as never);
+
+    // Seed: one INBOX thread, one SENT thread.
+    await prisma.thread.create({
+      data: {
+        accountId,
+        providerThreadId: `pth-inbox-${randomUUID()}`,
+        subject: "Inbox row",
+        lastMessageAt: new Date("2026-05-12T10:00:00Z"),
+        unreadCount: 0,
+        labels: ["INBOX"],
+        participants: [],
+      },
+    });
+    await prisma.thread.create({
+      data: {
+        accountId,
+        providerThreadId: `pth-sent-${randomUUID()}`,
+        subject: "Sent row",
+        lastMessageAt: new Date("2026-05-12T11:00:00Z"),
+        unreadCount: 0,
+        labels: ["SENT"],
+        participants: [],
+      },
+    });
+
+    const inboxResult = await listThreads({ folder: "inbox" });
+    expect(inboxResult.ok).toBe(true);
+    if (!inboxResult.ok) return;
+    expect(inboxResult.data.threads.map((t) => t.subject)).toEqual(["Inbox row"]);
+
+    const sentResult = await listThreads({ folder: "sent" });
+    expect(sentResult.ok).toBe(true);
+    if (!sentResult.ok) return;
+    expect(sentResult.data.threads.map((t) => t.subject)).toEqual(["Sent row"]);
+  });
+});
+
+describe("listDraftsAction", () => {
+  it("returns the user's drafts and rejects unauthenticated callers", async () => {
+    authMock.mockResolvedValue(null as never);
+    const noSession = await listDraftsAction({});
+    expect(noSession).toEqual({ ok: false, error: "Unauthorized" });
+
+    const { userId, accountId } = await createUserWithAccount();
+    await prisma.draft.create({
+      data: {
+        userId,
+        accountId,
+        threadId: null,
+        mode: "new",
+        to: [],
+        cc: [],
+        bcc: [],
+        subject: "From action test",
+        bodyHtml: "<p>hi</p>",
+        inReplyTo: [],
+        references: [],
+      },
+    });
+    authMock.mockResolvedValue({ user: { id: userId } } as never);
+    const ok = await listDraftsAction({});
+    expect(ok.ok).toBe(true);
+    if (!ok.ok) return;
+    expect(ok.data.drafts.map((d) => d.subject)).toEqual(["From action test"]);
   });
 });
 

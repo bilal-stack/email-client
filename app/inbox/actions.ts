@@ -9,7 +9,13 @@ import {
   revertLabels,
   trashLocally,
 } from "@/lib/db/inbox-mutations";
-import { type ThreadRow, getThreadByIdForUser, listThreadsForUser } from "@/lib/db/inbox-queries";
+import {
+  type DraftRow,
+  type ThreadRow,
+  getThreadByIdForUser,
+  listDraftsForUser,
+  listThreadsForUser,
+} from "@/lib/db/inbox-queries";
 import { sanitizeEmailHtml } from "@/lib/email-html/sanitize";
 import { getProviderForAccount } from "@/lib/providers";
 import { canonicalizeProviderError } from "@/lib/providers/canonical-errors";
@@ -22,6 +28,7 @@ const listThreadsInput = z.object({
   cursor: z.string().cuid().optional(),
   limit: z.number().int().min(1).max(100).optional(),
   sort: z.enum(["priority", "time"]).optional(),
+  folder: z.enum(["inbox", "sent", "archived", "spam", "trash", "all"]).optional(),
 });
 
 export async function listThreads(input: z.infer<typeof listThreadsInput>): Action<{
@@ -33,6 +40,26 @@ export async function listThreads(input: z.infer<typeof listThreadsInput>): Acti
   const parsed = listThreadsInput.safeParse(input);
   if (!parsed.success) return { ok: false, error: "Invalid input" };
   const data = await listThreadsForUser(session.user.id, parsed.data);
+  return { ok: true, data };
+}
+
+const listDraftsInput = z.object({
+  accountId: z.string().cuid().optional(),
+});
+
+/**
+ * List the user's drafts. Drafts live in their own table and don't fit the
+ * `ThreadRow` shape, so the drafts folder routes here instead of going
+ * through `listThreads`. See `lib/db/inbox-queries.ts → listDraftsForUser`.
+ */
+export async function listDraftsAction(
+  input: z.infer<typeof listDraftsInput>,
+): Action<{ drafts: DraftRow[] }> {
+  const session = await auth();
+  if (!session?.user?.id) return { ok: false, error: "Unauthorized" };
+  const parsed = listDraftsInput.safeParse(input);
+  if (!parsed.success) return { ok: false, error: "Invalid input" };
+  const data = await listDraftsForUser(session.user.id, parsed.data);
   return { ok: true, data };
 }
 

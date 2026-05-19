@@ -56,9 +56,16 @@ export function canonicalizeProviderError(
   action: CanonicalAction = "generic",
 ): string {
   if (e instanceof AuthError) {
-    // Single message regardless of underlying cause (revoked token / stale
-    // history id / expired delta link / IMAP UIDVALIDITY flip / invalid
-    // credentials). All require the same user action: reconnect the account.
+    // `transient` is set when the failure was a timeout / 5xx from the
+    // OAuth token endpoint itself — the refresh token isn't necessarily
+    // bad, just slow. Pushing the user to reconnect there is the wrong
+    // affordance; tell them to retry.
+    if (e.transient) {
+      return "Authentication is slow right now. Please try again in a moment.";
+    }
+    // Default AuthError path — revoked refresh token, stale history id,
+    // expired delta link, IMAP UIDVALIDITY flip, invalid credentials.
+    // All require the same user action: reconnect the account.
     return "Please reconnect this account to continue.";
   }
   if (e instanceof RateLimitError) {

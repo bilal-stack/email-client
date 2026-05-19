@@ -19,4 +19,23 @@ export interface InboxMessageCreatedEvent {
   };
 }
 
-export type AppInngestEvent = InboxMessageCreatedEvent;
+/**
+ * Emitted by the `sendDraft` Server Action after it has persisted a SendTask
+ * row + attachments. The `process-send-task` Inngest function picks the
+ * event up, loads the task, and performs the actual provider call. The
+ * event payload deliberately carries only the task id — the row holds the
+ * full draft + attachments, including bytes that would exceed Inngest's
+ * per-event size cap if inlined.
+ */
+export const INBOX_SEND_TASK_QUEUED = "inbox/send-task.queued" as const;
+
+export interface InboxSendTaskQueuedEvent {
+  name: typeof INBOX_SEND_TASK_QUEUED;
+  data: {
+    taskId: string;
+    userId: string;
+    accountId: string;
+  };
+}
+
+export type AppInngestEvent = InboxMessageCreatedEvent | InboxSendTaskQueuedEvent;
