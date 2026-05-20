@@ -1,6 +1,7 @@
 import { ComposeButton } from "@/app/inbox/_components/compose-button";
 import { InboxEventsListener } from "@/app/inbox/_components/inbox-events-listener";
 import { MailboxNavList } from "@/app/inbox/_components/mailbox-nav-list";
+import { MobileMailboxToggle } from "@/app/inbox/_components/mobile-mailbox-toggle";
 import { OutboxStatus } from "@/app/inbox/_components/outbox-status";
 import { InboxQueryProvider } from "@/app/inbox/_components/query-provider";
 import { SearchInput } from "@/app/inbox/_components/search-input";
@@ -37,9 +38,12 @@ export default async function MailLayout({ children }: { children: React.ReactNo
       <InboxEventsListener />
       <div className="flex min-h-screen flex-col">
         <header className="flex items-center gap-4 border-b border-zinc-200 bg-white px-4 py-3">
-          <Link href="/inbox" className="shrink-0 text-sm font-semibold tracking-tight">
-            Universal Mail
-          </Link>
+          <div className="flex items-center gap-2">
+            <MobileMailboxToggle accounts={accounts} />
+            <Link href="/inbox" className="shrink-0 text-sm font-semibold tracking-tight">
+              Universal Mail
+            </Link>
+          </div>
           <div className="hidden flex-1 sm:block">
             <SearchInput />
           </div>
