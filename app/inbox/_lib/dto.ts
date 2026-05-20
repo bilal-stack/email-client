@@ -14,4 +14,8 @@ export interface ThreadDTO {
   subject: string;
   accountId: string;
   accountEmail: string;
+  /// Thread-level labels (union across all messages, as written by the
+  /// sync worker). The thread-actions header reads these to decide which
+  /// buttons to show — e.g. "Not spam" appears only when SPAM is present.
+  labels: string[];
 }

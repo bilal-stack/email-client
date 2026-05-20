@@ -53,7 +53,7 @@ export function ThreadView({ thread, messages }: ThreadViewProps) {
           <Button asChild size="sm" variant="outline">
             <Link href={`/inbox/${thread.id}/forward`}>Forward</Link>
           </Button>
-          <ThreadActions threadId={thread.id} />
+          <ThreadActions threadId={thread.id} labels={thread.labels} />
         </div>
       </header>
       <SummaryBanner threadId={thread.id} />

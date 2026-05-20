@@ -8,7 +8,7 @@ import { useInboxSelection } from "@/lib/inbox/selection-store";
 import { cn } from "@/lib/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Archive, Sparkles, Tag, Trash2 } from "lucide-react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useTransition } from "react";
 
 function formatTime(d: Date | string) {
@@ -42,6 +42,7 @@ export function ThreadListRow({
   const senderLabel =
     row.participantCount > 2 ? `${row.fromName} +${row.participantCount - 1}` : row.fromName;
   const router = useRouter();
+  const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const [isPending, startTransition] = useTransition();
   const isSelected = useInboxSelection((s) => s.has(row.id));
@@ -80,7 +81,31 @@ export function ThreadListRow({
     });
   };
 
-  const open = () => router.push(`/inbox/${row.id}`);
+  // Forward the current `?folder=`, `?sort=`, `?account=` selections so the
+  // thread page's side panel renders the same folder/sort context the user
+  // was just in. Otherwise opening a Sent-folder thread would bounce them
+  // back to the Inbox folder when they return to the list.
+  //
+  // We read the row id from the live DOM (`data-row-id` on `currentTarget`)
+  // instead of trusting the closure's `row.id`. This is a defense against
+  // a real bug we saw in manual testing where clicking row A would open
+  // row B: an SSE-driven inbox refetch can reorder the list between
+  // `mousedown` and `click`, leaving the DOM node attached to a different
+  // React component than the one whose closure captured the click handler.
+  // Reading the attribute back from `currentTarget` always reflects the
+  // row that's currently rendered at the clicked DOM position. The
+  // closure's `row.id` is the fallback for keyboard-driven opens.
+  const open = (
+    e?: { currentTarget: HTMLElement } | React.SyntheticEvent<HTMLElement>,
+  ) => {
+    const liveId =
+      e?.currentTarget instanceof HTMLElement
+        ? e.currentTarget.dataset.rowId ?? null
+        : null;
+    const id = liveId ?? row.id;
+    const qs = searchParams?.toString() ?? "";
+    router.push(qs ? `/inbox/${id}?${qs}` : `/inbox/${id}`);
+  };
 
   return (
     // biome-ignore lint/a11y/useSemanticElements: row hosts buttons inside; nesting a Link interactive would break their click semantics.
@@ -88,9 +113,9 @@ export function ThreadListRow({
       role="link"
       tabIndex={0}
       data-row-id={row.id}
-      onClick={open}
+      onClick={(e) => open(e)}
       onKeyDown={(e) => {
-        if (e.key === "Enter") open();
+        if (e.key === "Enter") open(e);
       }}
       className={cn(
         "group flex min-h-[64px] cursor-pointer items-start gap-3 border-b border-zinc-100 bg-white px-4 py-3 transition-colors",

@@ -12,6 +12,7 @@ import { prisma } from "@/lib/db";
 import { writeDelta } from "@/lib/inngest/functions/_write-delta";
 import { inngest } from "@/lib/inngest/client";
 import { GraphProvider } from "@/lib/providers/graph";
+import { AuthError } from "@/lib/providers/errors";
 import { emitInboxSyncEvent } from "@/lib/realtime/inbox-events";
 
 interface GraphAccountRow {
@@ -37,7 +38,34 @@ export const graphSyncDelta = inngest.createFunction(
     for (const account of accounts) {
       await step.run(`sync-${account.id}`, async () => {
         const provider = new GraphProvider(account.id);
-        const delta = await provider.syncDelta(account.syncCursor);
+        let delta: Awaited<ReturnType<GraphProvider["syncDelta"]>>;
+        try {
+          delta = await provider.syncDelta(account.syncCursor);
+        } catch (e) {
+          // Same logic as gmail-sync: revoked/unrefreshable tokens shouldn't
+          // turn into an infinite retry loop. Mark the account as needing
+          // reconnect and bail; transient (timeout) errors are left alone
+          // so Inngest's next cron tick gets a fresh shot.
+          if (e instanceof AuthError) {
+            console.warn("[graph-sync] AuthError — skipping until reconnect", {
+              accountId: account.id,
+              transient: e.transient,
+              message: e.message,
+            });
+            if (!e.transient) {
+              await prisma.mailAccount
+                .update({
+                  where: { id: account.id },
+                  data: { needsReconnectAt: new Date() },
+                })
+                .catch(() => {
+                  /* column may not exist yet in older deploys; ignore */
+                });
+            }
+            return;
+          }
+          throw e;
+        }
 
         const touched = await prisma.$transaction((tx) =>
           writeDelta({ account, delta, tx }),

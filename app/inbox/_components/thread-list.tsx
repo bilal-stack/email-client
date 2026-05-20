@@ -8,7 +8,7 @@ import type { ThreadRow } from "@/lib/db/inbox-queries";
 import { useInboxKeyboard } from "@/lib/inbox/keyboard";
 import { useInboxSelection } from "@/lib/inbox/selection-store";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useRef } from "react";
 
 interface ThreadListProps {
@@ -48,6 +48,7 @@ export function ThreadList({
   const data = query.data ?? initial;
   const rowIds = data.threads.map((t) => t.id);
   const router = useRouter();
+  const searchParams = useSearchParams();
   const queryClient = useQueryClient();
   const selectedIds = useInboxSelection((s) => s.selected);
   const toggleSelection = useInboxSelection((s) => s.toggle);
@@ -55,7 +56,12 @@ export function ThreadList({
 
   const { focusedIndex, setFocusedIndex } = useInboxKeyboard({
     rowIds,
-    onOpen: (id) => router.push(`/inbox/${id}`),
+    onOpen: (id) => {
+      // Forward folder/sort/account so keyboard-open lands in the same
+      // context as a click-open (see thread-list-row.tsx's `open()`).
+      const qs = searchParams?.toString() ?? "";
+      router.push(qs ? `/inbox/${id}?${qs}` : `/inbox/${id}`);
+    },
     onArchive: async (ids) => {
       await archiveThreads({ threadIds: ids });
       clearSelection();

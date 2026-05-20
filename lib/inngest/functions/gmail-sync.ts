@@ -11,6 +11,7 @@ import { prisma } from "@/lib/db";
 import { writeDelta } from "@/lib/inngest/functions/_write-delta";
 import { inngest } from "@/lib/inngest/client";
 import { GmailProvider } from "@/lib/providers/gmail";
+import { AuthError } from "@/lib/providers/errors";
 import { emitInboxSyncEvent } from "@/lib/realtime/inbox-events";
 
 interface GmailAccountRow {
@@ -40,7 +41,38 @@ export const gmailSyncDelta = inngest.createFunction(
     for (const account of accounts) {
       await step.run(`sync-${account.id}`, async () => {
         const provider = new GmailProvider(account.id);
-        const delta = await provider.syncDelta(account.syncCursor);
+        let delta: Awaited<ReturnType<GmailProvider["syncDelta"]>>;
+        try {
+          delta = await provider.syncDelta(account.syncCursor);
+        } catch (e) {
+          // AuthError = revoked / unrefreshable token. Inngest's default
+          // policy is to retry every failed step on backoff — for a
+          // permanently-broken account that means we'd hammer Google's
+          // token endpoint (and our own logs) every minute forever. Swallow
+          // it here, mark the account as needing a reconnect, and return.
+          // The transient flag distinguishes "Google is being slow today"
+          // (worth a single retry on the next cron tick) from "user has
+          // genuinely revoked us" (worth nothing until they reconnect).
+          if (e instanceof AuthError) {
+            console.warn("[gmail-sync] AuthError — skipping until reconnect", {
+              accountId: account.id,
+              transient: e.transient,
+              message: e.message,
+            });
+            if (!e.transient) {
+              await prisma.mailAccount
+                .update({
+                  where: { id: account.id },
+                  data: { needsReconnectAt: new Date() },
+                })
+                .catch(() => {
+                  /* column may not exist yet in older deploys; ignore */
+                });
+            }
+            return;
+          }
+          throw e;
+        }
 
         const touched = await prisma.$transaction((tx) =>
           writeDelta({ account, delta, tx }),

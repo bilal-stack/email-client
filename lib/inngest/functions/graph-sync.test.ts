@@ -140,7 +140,14 @@ describe("graphSyncDelta inngest function", () => {
     expect(gr.lastSyncedAt).not.toBeNull();
   });
 
-  it("propagates AuthError from syncDelta and does NOT advance the cursor or lastSyncedAt", async () => {
+  it("swallows AuthError from syncDelta, leaves cursor untouched, and marks the account needs-reconnect", async () => {
+    // Behaviour change (2026-05-20): the sync worker used to propagate
+    // AuthError up to Inngest, which then retried the function on every
+    // 1-minute cron tick — a permanently-revoked refresh token caused an
+    // endless retry storm and log spam. The worker now catches the
+    // non-transient AuthError, stamps `MailAccount.needsReconnectAt`, and
+    // returns cleanly so the cron moves on. The UI surfaces the flag as
+    // a "Reconnect" CTA in a later spec.
     const graph = await createAccount("graph", "STALE_DELTA_LINK");
     scopeListAccounts([
       { id: graph.accountId, syncCursor: "STALE_DELTA_LINK", userId: graph.userId },
@@ -150,10 +157,37 @@ describe("graphSyncDelta inngest function", () => {
       new AuthError("Sync delta expired — reconnect required: deltaToken not found"),
     );
 
-    await expect(invokeHandler()).rejects.toBeInstanceOf(AuthError);
+    // No throw — the handler must resolve.
+    await expect(invokeHandler()).resolves.toBeUndefined();
 
     const gr = await prisma.mailAccount.findUniqueOrThrow({ where: { id: graph.accountId } });
+    // Cursor + lastSyncedAt MUST stay unchanged (no successful sync ran).
     expect(gr.syncCursor).toBe("STALE_DELTA_LINK");
     expect(gr.lastSyncedAt).toBeNull();
+    // The reconnect flag IS stamped so the UI / next cron can react.
+    expect(gr.needsReconnectAt).not.toBeNull();
+  });
+
+  it("does NOT mark needs-reconnect for a transient AuthError (e.g. token-refresh timeout)", async () => {
+    // The `transient` flag on AuthError distinguishes "Google is being slow
+    // today, try again next tick" from "user revoked us, nothing will fix
+    // this without re-auth". Only the latter should stamp needsReconnectAt;
+    // a transient hiccup must leave the row alone so the next cron tick
+    // gets a fresh shot without surfacing a misleading reconnect CTA.
+    const graph = await createAccount("graph", "GRAPH_CURSOR");
+    scopeListAccounts([
+      { id: graph.accountId, syncCursor: "GRAPH_CURSOR", userId: graph.userId },
+    ]);
+
+    vi.spyOn(GraphProvider.prototype, "syncDelta").mockRejectedValue(
+      new AuthError("Microsoft token refresh timed out", { transient: true }),
+    );
+
+    await expect(invokeHandler()).resolves.toBeUndefined();
+
+    const gr = await prisma.mailAccount.findUniqueOrThrow({ where: { id: graph.accountId } });
+    expect(gr.syncCursor).toBe("GRAPH_CURSOR");
+    expect(gr.lastSyncedAt).toBeNull();
+    expect(gr.needsReconnectAt).toBeNull();
   });
 });

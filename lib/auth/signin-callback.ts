@@ -1,18 +1,27 @@
-// Extracted from `lib/auth/index.ts` so the signIn callback can be unit tested
-// without spinning up the full NextAuth instance. `lib/auth/index.ts` imports
-// `handleSignIn` and wires it into the `callbacks.signIn` slot.
+// OAuth signIn callback. Runs after every Google / Microsoft sign-in
+// (Credentials sign-ins handle their own persistence inside `authorize()`).
 //
-// The callback handles three concerns:
-//   1. Resolve a User row (via Auth.js `user.id` → email lookup → self-create).
-//   2. Verify the OAuth grant includes the scope we need to actually call the
-//      provider; reject with a redirect if not.
-//   3. Mirror the encrypted provider tokens into our own `MailAccount` table
-//      (Auth.js's `Account` row keeps the plaintext OAuth tokens for its
-//      session machinery; we never read those — we use the encrypted copy).
+// What this does:
+//   1. Decide the userId — reuse the existing MailAccount.userId for a
+//      returning (provider, email), or take it from the add-mailbox cookie
+//      for the "Add mailbox" flow, or mint a fresh cuid for a brand-new
+//      person.
+//   2. Encrypt the OAuth tokens and upsert into MailAccount.
+//   3. Mutate the `user.id` arg so the downstream `jwt` callback stashes
+//      that userId into the JWT.
+//
+// What this DELIBERATELY does NOT do anymore:
+//   - Touch User / Account / Session tables. There aren't any — Option A
+//     dropped PrismaAdapter; MailAccount is the only identity record.
+//   - Poll for User-row visibility. There's nothing to wait for.
+//   - Self-create a fallback User. Same reason.
+//
+// See prisma/schema.prisma → MailAccount for the architectural rationale.
 
 import { readAndClearAddMailboxIntent } from "@/lib/auth/add-mailbox-cookie";
 import { type SealedSecret, encrypt } from "@/lib/auth/crypto";
 import { prisma } from "@/lib/db";
+import { createId } from "@paralleldrive/cuid2";
 import type { Account, Profile, User } from "next-auth";
 
 export type MailProviderName = "gmail" | "graph";
@@ -47,124 +56,29 @@ export async function handleSignIn({
   account,
   profile,
 }: SignInArgs): Promise<boolean | string> {
-  // Non-OAuth sign-ins (credentials/IMAP stub, email magic link) bypass
-  // MailAccount linkage.
+  // Non-OAuth sign-ins (credentials/IMAP, email magic link) handle their
+  // own persistence — see the IMAP `authorize()` path in lib/auth/index.ts.
   if (!account || !OAUTH_ACCOUNT_TYPES.has(account.type)) return true;
 
   const providerName = mapProvider(account.provider);
   if (!providerName) return true;
 
-  const emailAddress =
+  const rawEmail =
     (typeof profile?.email === "string" ? profile.email : null) ?? user?.email ?? null;
-  if (!emailAddress) {
+  if (!rawEmail) {
     console.error("[auth.signIn] no email on profile; rejecting", {
       provider: account.provider,
     });
     return false;
   }
+  // Lowercase everywhere — providers may give us mixed-case emails
+  // ("Foo@bar.com" vs "foo@bar.com") and we don't want two MailAccount
+  // rows for what is plainly the same address.
+  const emailAddress = rawEmail.toLowerCase();
 
-  // 1. Resolve the User row.
-  //
-  // FIRST PRIORITY — add-mailbox flow. If the /signin?add=1 Server Action
-  // stashed the active session's userId in a cookie before kicking off
-  // OAuth, the new MailAccount belongs to THAT user, not whichever User
-  // PrismaAdapter happened to create/resolve from the new provider's
-  // profile. Without this override, every "Add mailbox" with a non-
-  // matching email creates a new User row (because Auth.js doesn't know
-  // these are the same person) and our MailAccount upsert lands on
-  // it — the active session's inbox then can't see the new mailbox.
-  // The cookie is one-shot (cleared on read) and verified against the
-  // DB so a stale value can't reattach a mailbox to a non-existent user.
-  const intentUserId = await readAndClearAddMailboxIntent();
-  let userId: string | null = null;
-  if (intentUserId) {
-    const intentExists = await prisma.user.findUnique({
-      where: { id: intentUserId },
-      select: { id: true },
-    });
-    if (intentExists) {
-      userId = intentUserId;
-      console.warn(
-        "[auth.signIn] add-mailbox intent — targeting active session's user",
-        { userId, providerEmail: emailAddress },
-      );
-    }
-    // If the cookie's userId no longer exists (session expired, user
-    // deleted, whatever), fall through to the standard resolution path.
-  }
-
-  // SECOND PRIORITY — standard OAuth resolution.
-  //
-  // Auth.js v5 + PrismaAdapter creates the User row inside its own transaction
-  // during the OAuth callback and then invokes this `signIn` callback. The
-  // resulting `user.id` is the ID PrismaAdapter just minted, but on SQLite in
-  // WAL mode (and occasionally on Postgres under high concurrency) that write
-  // may not yet be visible to a sibling Prisma connection when we ask for it.
-  // The poll below rides out the visibility race before falling back to email
-  // lookup / self-create.
-  if (!userId) {
-    let resolved = user?.id ?? null;
-    if (resolved) {
-      resolved = await waitForUserVisibility(resolved, emailAddress);
-    }
-    if (!resolved) {
-      const existing = await prisma.user.findUnique({ where: { email: emailAddress } });
-      resolved = existing?.id ?? null;
-    }
-    if (!resolved) {
-      const created = await prisma.user.create({
-        data: {
-          email: emailAddress,
-          name: typeof profile?.name === "string" ? profile.name : null,
-          image: typeof profile?.picture === "string" ? profile.picture : null,
-        },
-      });
-      resolved = created.id;
-      console.warn("[auth.signIn] User row missing at callback time; created it ourselves", {
-        userId: resolved,
-        emailAddress,
-      });
-    }
-    userId = resolved;
-  }
-
-  // 2. Cross-user conflict guard.
-  //
-  // The OAuth email might already be a `MailAccount.emailAddress` belonging
-  // to a DIFFERENT User row (i.e. an unrelated identity also signed up here
-  // and connected this same provider). Letting the upsert proceed in that
-  // case would either (a) attach the MailAccount to the wrong User or (b)
-  // hit a unique-constraint violation on `(userId, provider, emailAddress)`.
-  // Neither is good UX — surface a clean error instead and back out of the
-  // sign-in.
-  //
-  // Why we check by `emailAddress` and not by `(provider, emailAddress)`:
-  // even cross-provider conflicts matter for the user's mental model
-  // ("alice@gmail.com is alice, regardless of which app I authed through").
-  // In practice cross-provider duplicates are rare (a Gmail address can't
-  // sign in via Microsoft) but the broader check is cheap and defensive.
-  const otherUserOwnsThisMailAccount = await prisma.mailAccount.findFirst({
-    where: {
-      emailAddress,
-      userId: { not: userId },
-    },
-    select: { userId: true },
-  });
-  if (otherUserOwnsThisMailAccount) {
-    console.warn(
-      "[auth.signIn] OAuth email is already a MailAccount of a different user — refusing link",
-      {
-        emailAddress,
-        resolvedUserId: userId,
-        conflictingUserId: otherUserOwnsThisMailAccount.userId,
-      },
-    );
-    return "/signin?error=AccountConflict";
-  }
-
-  // 3. Verify the OAuth grant includes the scope we need.
-  // Without it, the access token is useless for our provider calls; better to
-  // refuse the link than to create a half-broken MailAccount the inbox UI
+  // 1. Verify the OAuth grant includes the scope we need.
+  // Without it, the access token is useless for our provider calls; better
+  // to refuse the link than to create a half-broken MailAccount the inbox
   // would silently treat as "no mail yet".
   const granted = (account.scope ?? "").split(/\s+/);
   if (!granted.includes(REQUIRED_SCOPES[providerName])) {
@@ -175,10 +89,78 @@ export async function handleSignIn({
     return `/login?error=ScopeMissing&provider=${account.provider}`;
   }
 
-  // 4. Encrypt and mirror tokens into MailAccount.
-  // The encrypt() call is inside the same try/catch as upsert so a bad
-  // ENCRYPTION_KEY surfaces as our logged error, not Auth.js's opaque
-  // "AccessDenied" page.
+  // 2. Decide the userId for this sign-in.
+  //
+  // Precedence (highest → lowest):
+  //   a. add-mailbox-cookie: an active session kicked off /signin?add=1
+  //      to connect another mailbox. Use the cookie's userId so the new
+  //      MailAccount lands on the active user, not a fresh one.
+  //   b. existing MailAccount for (provider, emailAddress): a returning
+  //      sign-in. Reuse its userId so the same person keeps the same
+  //      session id across re-auths.
+  //   c. brand-new mint: first time anyone signs in with this provider+email.
+  const intentUserId = await readAndClearAddMailboxIntent();
+  let userId: string | null = null;
+  let resolveSource: "intent" | "existing" | "mint" = "mint";
+  if (intentUserId) {
+    // Confirm the intent cookie's userId actually belongs to a MailAccount
+    // we know about — otherwise a stale cookie from a since-purged session
+    // could re-attach the new mailbox to a non-existent identity. If we
+    // can't verify, fall through to the standard resolution path.
+    const intentExists = await prisma.mailAccount.findFirst({
+      where: { userId: intentUserId },
+      select: { id: true },
+    });
+    if (intentExists) {
+      userId = intentUserId;
+      resolveSource = "intent";
+    }
+  }
+  if (!userId) {
+    const existing = await prisma.mailAccount.findFirst({
+      where: { provider: providerName, emailAddress },
+      select: { userId: true },
+    });
+    if (existing) {
+      userId = existing.userId;
+      resolveSource = "existing";
+    }
+  }
+  if (!userId) {
+    userId = createId();
+    resolveSource = "mint";
+  }
+
+  // 3. Cross-user conflict guard.
+  //
+  // If THIS (provider, emailAddress) pair already belongs to a different
+  // userId from the one we just resolved (only possible in the
+  // add-mailbox-intent path — the lookup above would have picked up
+  // matches otherwise), the user is trying to attach a mailbox someone
+  // else owns. Refuse with a clean error rather than letting the upsert
+  // violate the unique constraint or silently re-bind.
+  if (resolveSource === "intent") {
+    const owned = await prisma.mailAccount.findFirst({
+      where: { provider: providerName, emailAddress, userId: { not: userId } },
+      select: { userId: true },
+    });
+    if (owned) {
+      console.warn(
+        "[auth.signIn] Add-mailbox intent conflicts with an existing MailAccount under a different userId",
+        {
+          emailAddress,
+          provider: providerName,
+          intentUserId: userId,
+          existingUserId: owned.userId,
+        },
+      );
+      return "/signin?error=AccountConflict";
+    }
+  }
+
+  // 4. Encrypt and upsert MailAccount. The encrypt() call is inside the
+  // same try/catch as upsert so a bad ENCRYPTION_KEY surfaces as our
+  // logged error, not Auth.js's opaque "AccessDenied" page.
   try {
     const secretJson = JSON.stringify({
       accessToken: account.access_token ?? null,
@@ -190,13 +172,26 @@ export async function handleSignIn({
     });
     const sealed = encrypt(secretJson);
 
-    await upsertMailAccountWithFkRetry({
+    const displayName =
+      typeof profile?.name === "string"
+        ? profile.name
+        : typeof user?.name === "string"
+          ? user.name
+          : null;
+    const image =
+      typeof profile?.picture === "string"
+        ? profile.picture
+        : typeof user?.image === "string"
+          ? user.image
+          : null;
+
+    await upsertMailAccount({
       userId,
       providerName,
       emailAddress,
-      displayName: typeof profile?.name === "string" ? profile.name : null,
+      displayName,
+      image,
       sealed,
-      profileNameRaw: profile?.name,
     });
   } catch (e) {
     const isCryptoError = e instanceof Error && /ENCRYPTION_KEY/.test(e.message);
@@ -208,127 +203,61 @@ export async function handleSignIn({
     );
     return false;
   }
+
+  // 5. Propagate the resolved userId to the JWT callback.
+  //
+  // Auth.js threads the same `user` object from signIn → jwt on first
+  // sign-in. Mutating its id is the documented way to hand a custom value
+  // to downstream callbacks without setting up a side-channel.
+  if (user) user.id = userId;
+
+  console.warn("[auth.signIn] resolved", {
+    userId,
+    provider: providerName,
+    emailAddress,
+    source: resolveSource,
+  });
   return true;
 }
 
 /**
- * Wraps the `MailAccount.upsert` in a single-retry that handles the
- * Auth.js + PrismaAdapter + SQLite-WAL write-visibility race documented
- * in the resolve-User block above. If the FK to `User.id` fires (P2003),
- * we self-create the User row by email and retry the upsert once. After
- * the retry, any further failure propagates up to the caller and ends
- * the sign-in with AccessDenied (the intended fail-loud behavior for
- * truly broken state like a stale ENCRYPTION_KEY).
+ * Upsert the MailAccount row keyed on (userId, provider, emailAddress).
+ * On update we ALSO clear `needsReconnectAt` — a fresh successful sign-in
+ * proves the user fixed whatever made the previous sync worker stamp the
+ * flag (revoked token, scope change, etc).
  */
-async function upsertMailAccountWithFkRetry(args: {
+async function upsertMailAccount(args: {
   userId: string;
   providerName: MailProviderName;
   emailAddress: string;
   displayName: string | null;
+  image: string | null;
   sealed: SealedSecret;
-  profileNameRaw: unknown;
 }): Promise<void> {
-  const { providerName, emailAddress, displayName, sealed, profileNameRaw } = args;
-  let userId = args.userId;
-  const buildCreate = (uid: string) => ({
-    userId: uid,
-    provider: providerName,
-    emailAddress,
-    displayName,
-    encryptedSecret: sealed.ciphertext,
-    secretIv: sealed.iv,
-    secretTag: sealed.tag,
-  });
-  const update = {
-    encryptedSecret: sealed.ciphertext,
-    secretIv: sealed.iv,
-    secretTag: sealed.tag,
-    displayName: typeof profileNameRaw === "string" ? profileNameRaw : undefined,
-  };
-  try {
-    await prisma.mailAccount.upsert({
-      where: {
-        userId_provider_emailAddress: { userId, provider: providerName, emailAddress },
-      },
-      create: buildCreate(userId),
-      update,
-    });
-    return;
-  } catch (e) {
-    // P2003 is Prisma's "Foreign key constraint failed" code. The only FK on
-    // MailAccount is userId → User.id; a P2003 here means the User row we
-    // resolved isn't visible at the connection that ran the upsert.
-    const isFkError =
-      e !== null &&
-      typeof e === "object" &&
-      (e as { code?: unknown }).code === "P2003";
-    if (!isFkError) throw e;
-  }
-
-  // Re-resolve User by email and create if missing — same fallback chain as
-  // the resolve-User block, but executed AFTER the FK rejection.
-  const existing = await prisma.user.findUnique({
-    where: { email: emailAddress },
-    select: { id: true },
-  });
-  if (existing) {
-    userId = existing.id;
-  } else {
-    const created = await prisma.user.create({
-      data: {
-        email: emailAddress,
-        name: typeof profileNameRaw === "string" ? profileNameRaw : null,
-      },
-    });
-    userId = created.id;
-    console.warn("[auth.signIn] FK retry: self-created User after upsert FK failure", {
-      userId,
-      emailAddress,
-    });
-  }
-
+  const { userId, providerName, emailAddress, displayName, image, sealed } = args;
   await prisma.mailAccount.upsert({
     where: {
       userId_provider_emailAddress: { userId, provider: providerName, emailAddress },
     },
-    create: buildCreate(userId),
-    update,
+    create: {
+      userId,
+      provider: providerName,
+      emailAddress,
+      displayName,
+      image,
+      encryptedSecret: sealed.ciphertext,
+      secretIv: sealed.iv,
+      secretTag: sealed.tag,
+    },
+    update: {
+      encryptedSecret: sealed.ciphertext,
+      secretIv: sealed.iv,
+      secretTag: sealed.tag,
+      // Only overwrite displayName / image when the OAuth profile carries
+      // a value — `undefined` tells Prisma "leave the column alone".
+      displayName: displayName ?? undefined,
+      image: image ?? undefined,
+      needsReconnectAt: null,
+    },
   });
-}
-
-/**
- * Poll the DB for a User row's visibility, waiting up to ~600ms total before
- * giving up. Used to ride out the Auth.js + PrismaAdapter transaction-commit
- * window without prematurely self-creating a User row (which would collide
- * with PrismaAdapter's pending insert on `email @unique` and force its
- * transaction to roll back — see the long comment in `handleSignIn`).
- *
- * Returns the original userId if it became visible within the budget; null
- * otherwise (so the caller falls through to email-lookup / self-create).
- */
-async function waitForUserVisibility(
-  userId: string,
-  emailAddress: string,
-): Promise<string | null> {
-  // 6 attempts × 100ms = 600ms total budget. Auth.js commits in <300ms in
-  // practice; the extra headroom covers GC pauses or a slow disk on Windows.
-  const ATTEMPTS = 6;
-  const DELAY_MS = 100;
-  for (let i = 0; i < ATTEMPTS; i++) {
-    const visible = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { id: true },
-    });
-    if (visible) return userId;
-    // Sleep before the next probe. Skip the sleep after the final probe so
-    // we return as fast as possible when the wait is hopeless.
-    if (i < ATTEMPTS - 1) {
-      await new Promise<void>((resolve) => setTimeout(resolve, DELAY_MS));
-    }
-  }
-  console.warn(
-    "[auth.signIn] user.id from Auth.js not visible after 600ms — falling back to email lookup",
-    { userIdFromAuthJs: userId, emailAddress },
-  );
-  return null;
 }

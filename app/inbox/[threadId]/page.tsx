@@ -1,11 +1,11 @@
 import { MarkReadTrigger } from "@/app/inbox/[threadId]/_components/mark-read-trigger";
 import { ThreadView } from "@/app/inbox/[threadId]/_components/thread-view";
-import { AccountSwitcher } from "@/app/inbox/_components/account-switcher";
+import { FolderNav } from "@/app/inbox/_components/folder-nav";
+import { SortToggle } from "@/app/inbox/_components/sort-toggle";
 import { ThreadList } from "@/app/inbox/_components/thread-list";
 import { getThread } from "@/app/inbox/actions";
 import { auth } from "@/lib/auth";
-import { prisma } from "@/lib/db";
-import { listThreadsForUser } from "@/lib/db/inbox-queries";
+import { type InboxFolder, type InboxSort, listThreadsForUser } from "@/lib/db/inbox-queries";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 
@@ -17,7 +17,22 @@ export const dynamic = "force-dynamic";
 
 interface ThreadPageProps {
   params: Promise<{ threadId: string }>;
-  searchParams: Promise<{ account?: string }>;
+  searchParams: Promise<{ account?: string; sort?: string; folder?: string }>;
+}
+
+function parseFolder(raw: string | undefined): InboxFolder {
+  switch (raw) {
+    case "sent":
+    case "archived":
+    case "spam":
+    case "trash":
+    case "all":
+      return raw;
+    // "drafts" never lands here — draft rows open the compose route, not
+    // /inbox/[threadId]. Fall through to inbox if someone hand-crafts the URL.
+    default:
+      return "inbox";
+  }
 }
 
 export default async function ThreadPage({ params, searchParams }: ThreadPageProps) {
@@ -32,8 +47,14 @@ export default async function ThreadPage({ params, searchParams }: ThreadPagePro
   }
   const userId = session.user.id;
   const { threadId } = await params;
-  const { account: accountParam } = await searchParams;
+  const {
+    account: accountParam,
+    sort: sortParam,
+    folder: folderParam,
+  } = await searchParams;
   const activeAccountId = accountParam ?? null;
+  const sort: InboxSort = sortParam === "time" ? "time" : "priority";
+  const folder = parseFolder(folderParam);
 
   const result = await getThread({ threadId });
   if (!result.ok) {
@@ -41,27 +62,32 @@ export default async function ThreadPage({ params, searchParams }: ThreadPagePro
     throw new Error(result.error);
   }
 
-  const accounts = await prisma.mailAccount.findMany({
-    where: { userId },
-    select: { id: true, emailAddress: true, displayName: true },
-    orderBy: { createdAt: "asc" },
-  });
   const initialList = await listThreadsForUser(userId, {
     ...(activeAccountId ? { accountId: activeAccountId } : {}),
+    sort,
+    folder,
   });
 
   return (
     <div className="grid h-full grid-cols-1 md:grid-cols-[minmax(320px,400px)_1fr]">
-      {/* Left pane: list (hidden on mobile when reading a thread). */}
+      {/* Left pane: list (hidden on mobile when reading a thread).
+          Account switching lives in the layout's left sidebar (MailboxNavList);
+          this side panel shows folder navigation + the thread list for the
+          active scope so the user always knows which folder they're in. */}
       <section className="hidden flex-col border-r border-zinc-200 md:flex">
-        <div className="border-b border-zinc-200 bg-white p-4">
-          <AccountSwitcher accounts={accounts} active={activeAccountId} />
+        <div className="space-y-3 border-b border-zinc-200 bg-white p-4">
+          <FolderNav active={folder} />
+          <div className="flex justify-stretch sm:justify-end">
+            <SortToggle />
+          </div>
         </div>
         <div className="flex-1 overflow-y-auto">
           <ThreadList
             accountId={activeAccountId}
             initial={initialList}
             selectedThreadId={threadId}
+            sort={sort}
+            folder={folder}
           />
         </div>
       </section>

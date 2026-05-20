@@ -57,15 +57,21 @@ export async function createSendTask(input: CreateSendTaskInput): Promise<{ task
       select: { id: true },
     });
     if (input.attachments.length > 0) {
-      await tx.sendTaskAttachment.createMany({
-        data: input.attachments.map((a) => ({
-          taskId: row.id,
-          filename: a.filename,
-          mimeType: a.mimeType,
-          size: a.size,
-          content: a.content,
-        })),
-      });
+      // Prisma v6 narrowed Bytes columns to `Buffer<ArrayBuffer>` — but
+      // every Buffer in our pipeline is typed `Buffer<ArrayBufferLike>`
+      // (the union includes SharedArrayBuffer) because `Buffer.from(...)`
+      // and the `File.arrayBuffer()` round-trip both produce the wider
+      // brand. Structural narrowing via intersection types doesn't
+      // survive through `Buffer.subarray(...).buffer`, so we cast at the
+      // array boundary instead. The bytes on the wire are identical.
+      const rows = input.attachments.map((a) => ({
+        taskId: row.id,
+        filename: a.filename,
+        mimeType: a.mimeType,
+        size: a.size,
+        content: a.content,
+      })) as unknown as Prisma.SendTaskAttachmentCreateManyInput[];
+      await tx.sendTaskAttachment.createMany({ data: rows });
     }
     return row;
   });

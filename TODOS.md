@@ -24,6 +24,26 @@ All cases from `.agent-os/specs/2026-05-17-graph-provider/sub-specs/tests.md` ar
 
 **Still owed:** `lib/inngest/functions/gmail-sync.test.ts` — once gmail-sync gains its own orchestration assertions (provider-filter, SSE-emit gating), the three writer-mechanics tests there can be removed since `_write-delta.test.ts` now covers them. Not load-bearing today; deferred.
 
+## Attachment download — explicitly deferred (out of MVP scope)
+
+Inbound attachments currently render as **read-only chips** in the thread view (`app/inbox/[threadId]/_components/message-card.tsx`): filename, size, and MIME type are visible but there's no download button. The bytes were never persisted locally either — only `providerAttachmentId` lives on the `Attachment` row.
+
+**Why deferred:** none of the mission success criteria (mission.md) or the roadmap phases (roadmap.md) call out attachment download as a required feature. The compose path supports *outbound* attachments (upload + send). Inbound download is the symmetric capability and a natural future feature, but it's net-new scope.
+
+**What it would take when revived** (~5 files):
+
+1. **`lib/providers/types.ts`** — add `downloadAttachment(messageId, attachmentId) → { bytes: Buffer; mimeType: string; filename: string }` to `IEmailProvider`.
+2. **`lib/providers/gmail.ts`** — implement via `gmail.users.messages.attachments.get({ userId: "me", messageId, id })`; the response carries base64url-encoded bytes.
+3. **`lib/providers/graph.ts`** — implement via `GET /me/messages/{messageId}/attachments/{id}/$value`; bytes come back raw.
+4. **`lib/providers/imap.ts`** — implement via `imapflow.download(uid, partPath)`. **Blocked on a pre-existing IMAP TODO**: the current `providerAttachmentId` heuristic (`cid ?? index+1`) doesn't carry the BODYSTRUCTURE part path. See the IMAP follow-ups section below.
+5. **`app/api/attachments/[messageId]/[attachmentId]/route.ts`** — new GET route handler. Session check → ownership check (`Message → Thread → MailAccount → userId`) → call `provider.downloadAttachment` → stream with `Content-Type` + `Content-Disposition: attachment; filename="..."`. Sanitize the filename for the header per the same rules as `sanitizeMimeFilename` in `lib/providers/gmail.ts`.
+6. **`app/inbox/[threadId]/_components/message-card.tsx`** — swap the static `<span>` chips for `<a href="/api/attachments/${m.id}/${a.id}" download>` with a Download icon.
+
+**Security notes when picked up:**
+- Ownership check is mandatory: an unauthenticated or cross-user GET to the attachment route must 404 before any provider call.
+- Strip `Content-Disposition` filename to ASCII-safe (RFC 5987 / `filename*=` for non-ASCII) so the response can't break out of the header.
+- Sniff MIME on download against the stored `mimeType`; never trust attacker-controlled values blindly. Rendering inline (`Content-Disposition: inline`) is risky — force `attachment` so the browser always downloads.
+
 ## Compose hardening (security-reviewer nits from compose-reply-forward)
 
 - **Client-side attachment guard doesn't mirror `MIME_DENY`.**

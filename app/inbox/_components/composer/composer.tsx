@@ -2,6 +2,7 @@
 
 import { AIDraftPanel } from "@/app/inbox/[threadId]/_components/ai-draft-panel";
 import { type AccountOption, AccountPicker } from "@/app/inbox/_components/composer/account-picker";
+import { AIComposePanel } from "@/app/inbox/_components/composer/ai-compose-panel";
 import { AttachmentList } from "@/app/inbox/_components/composer/attachment-list";
 import {
   ComposeActionBar,
@@ -260,6 +261,25 @@ export function Composer({
             threadId={threadId}
             mode={mode}
             accountId={accountId}
+            hasUnsavedManualEdits={
+              bodyHtml.trim().length > 0 && bodyHtml !== lastAIBodyHtml
+            }
+            onPick={(text) => {
+              const html = plainTextToHtml(text);
+              setBodyHtml(html);
+              setLastAIBodyHtml(html);
+              setEditorEpoch((n) => n + 1);
+            }}
+          />
+        ) : null}
+        {mode === "new" ? (
+          // New-compose path has no thread to seed from — the AI panel
+          // takes a user-typed prompt instead and uses the same
+          // tone-matched three-variant generator under the hood.
+          <AIComposePanel
+            accountId={accountId}
+            subject={subject}
+            recipients={to.map((r) => r.email)}
             hasUnsavedManualEdits={
               bodyHtml.trim().length > 0 && bodyHtml !== lastAIBodyHtml
             }

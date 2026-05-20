@@ -8,7 +8,7 @@ import { prisma } from "@/lib/db";
 // `npm run dev` start instead of on the user's first sign-in attempt.
 import { env } from "@/lib/env";
 import type { ImapMailboxSecret } from "@/lib/providers/auth";
-import { PrismaAdapter } from "@auth/prisma-adapter";
+import { createId } from "@paralleldrive/cuid2";
 import { ImapFlow } from "imapflow";
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
@@ -44,27 +44,20 @@ const MICROSOFT_SCOPES = [
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   ...authConfig,
-  adapter: PrismaAdapter(prisma),
+  // No PrismaAdapter. Identity is JWT-only and `MailAccount` is the canonical
+  // record of who-has-which-mailbox — see prisma/schema.prisma → MailAccount
+  // doc-comment for the full rationale. The OAuth providers below NEVER
+  // touch a User/Account/Session table; on every sign-in our handleSignIn
+  // callback upserts the encrypted secret into MailAccount keyed on
+  // (provider, lowercased emailAddress).
   providers: [
     // Explicitly pass clientId/clientSecret instead of relying on Auth.js v5's
     // env-var auto-detection (which expects AUTH_GOOGLE_ID/AUTH_GOOGLE_SECRET,
     // not GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET). Keeps `.env` naming
     // consistent across the project + matches what most tutorials show.
-    //
-    // `allowDangerousEmailAccountLinking: true` — by default Auth.js refuses
-    // to auto-link an OAuth sign-in to a pre-existing User row that shares
-    // the OAuth profile's email (defense against account-takeover via email
-    // impersonation). Our product model EXPECTS one User to connect multiple
-    // provider accounts that share an email (e.g. a Gmail address that's
-    // also registered as a Microsoft account login). Without this flag, the
-    // second provider sign-in fails with `OAuthAccountNotLinked` even when
-    // it's the same person, and the user can't recover in-app. We accept
-    // the trade-off: a hostile actor who controls the OAuth-providing
-    // email already has effective control of the inbox via that provider.
     Google({
       clientId: env.GOOGLE_CLIENT_ID,
       clientSecret: env.GOOGLE_CLIENT_SECRET,
-      allowDangerousEmailAccountLinking: true,
       authorization: {
         params: { scope: GOOGLE_SCOPES, access_type: "offline", prompt: "consent" },
       },
@@ -72,7 +65,6 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     MicrosoftEntraID({
       clientId: env.AZURE_AD_CLIENT_ID,
       clientSecret: env.AZURE_AD_CLIENT_SECRET,
-      allowDangerousEmailAccountLinking: true,
       authorization: { params: { scope: MICROSOFT_SCOPES } },
       issuer: `https://login.microsoftonline.com/${env.AZURE_AD_TENANT_ID}/v2.0`,
     }),
@@ -133,11 +125,16 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           return null;
         }
 
-        // 3. Resolve User row (lookup → self-create — matches handleSignIn).
+        // 3. Resolve userId from any existing MailAccount with this email,
+        //    OR mint a fresh one. Emails are stored lowercased so case-only
+        //    variants of the same address can't fork into a second user.
+        const normalizedEmail = c.emailAddress.toLowerCase();
         try {
-          const existing = await prisma.user.findUnique({ where: { email: c.emailAddress } });
-          const user =
-            existing ?? (await prisma.user.create({ data: { email: c.emailAddress } }));
+          const existing = await prisma.mailAccount.findFirst({
+            where: { provider: "imap", emailAddress: normalizedEmail },
+            select: { userId: true },
+          });
+          const userId = existing?.userId ?? createId();
 
           // 4. Encrypt and upsert MailAccount.
           const blob = JSON.stringify({
@@ -152,15 +149,15 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           await prisma.mailAccount.upsert({
             where: {
               userId_provider_emailAddress: {
-                userId: user.id,
+                userId,
                 provider: "imap",
-                emailAddress: c.emailAddress,
+                emailAddress: normalizedEmail,
               },
             },
             create: {
-              userId: user.id,
+              userId,
               provider: "imap",
-              emailAddress: c.emailAddress,
+              emailAddress: normalizedEmail,
               encryptedSecret: sealed.ciphertext,
               secretIv: sealed.iv,
               secretTag: sealed.tag,
@@ -169,10 +166,13 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
               encryptedSecret: sealed.ciphertext,
               secretIv: sealed.iv,
               secretTag: sealed.tag,
+              // Successful re-auth clears any stale "needs reconnect" flag
+              // the sync worker set the last time the password was wrong.
+              needsReconnectAt: null,
             },
           });
 
-          return { id: user.id, email: c.emailAddress };
+          return { id: userId, email: normalizedEmail };
         } catch (e) {
           console.warn("[auth.imap] persistence failed", { name: (e as Error)?.name });
           return null;
@@ -185,25 +185,28 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
     signIn: handleSignIn,
     async jwt({ token, user }) {
       if (user?.id) {
-        // First-time sign-in (no existing session) — set token.userId so
-        // the resulting JWT identifies this user on subsequent requests.
+        // handleSignIn has mutated `user.id` to our resolved userId —
+        // either a fresh cuid for a brand-new (provider, email) pair, or
+        // the existing MailAccount.userId for a returning sign-in.
+        //
+        // First-time sign-in (no existing session) — stash that id into
+        // the JWT so every request afterwards knows whose mailboxes to
+        // load.
         if (!token.userId) {
           token.userId = user.id;
           return token;
         }
         // Existing session + OAuth callback firing: this is an "add a
-        // mailbox" flow. The handleSignIn callback above has already
-        // attached the new MailAccount to the existing session's user
-        // (via the add-mailbox-cookie intent path). DO NOT overwrite
-        // token.userId — doing so would flip the session to whichever
-        // User PrismaAdapter resolved from the new OAuth profile, which
-        // is often a different (or freshly-created) row when the new
-        // provider's email doesn't match the active user's email.
+        // mailbox" flow. handleSignIn already attached the new
+        // MailAccount to the existing session's userId via the
+        // add-mailbox-cookie intent path. DO NOT overwrite token.userId
+        // — doing so would flip the active session onto a fresh user.
         //
-        // The visible symptom of overwriting: clicking "Add mailbox" with
-        // Microsoft after signing up with Gmail would land you on an
-        // empty inbox under a phantom user, with the new MailAccount
-        // attached to a different User from your original session.
+        // The visible symptom of overwriting (before this guard existed):
+        // clicking "Add mailbox" with Microsoft after signing up with
+        // Gmail would land you on an empty inbox under a phantom user,
+        // with the new MailAccount attached to a different id from the
+        // original session.
       }
       return token;
     },

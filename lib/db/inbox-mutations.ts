@@ -11,6 +11,7 @@ import type { Prisma } from "@prisma/client";
 
 const INBOX = "INBOX";
 const TRASH = "TRASH";
+const SPAM = "SPAM";
 
 export interface LabelSnapshotRow {
   id: string;
@@ -31,8 +32,11 @@ async function snapshot(threadIds: string[], userId: string): Promise<LabelSnaps
 }
 
 /**
- * Remove the `INBOX` label from each (owned) thread. Returns a snapshot of
- * the prior labels so the caller can revert on provider throw.
+ * Drop the `INBOX`, `TRASH`, and `SPAM` labels from each (owned) thread.
+ * "Archive" means "remove from every special folder" — running this from
+ * Inbox, Trash, or Spam all converge on the same Archived state (no
+ * INBOX, no TRASH, no SPAM). Returns a snapshot of the prior labels so
+ * the caller can revert on provider throw.
  */
 export async function archiveLocally(
   threadIds: string[],
@@ -40,7 +44,7 @@ export async function archiveLocally(
 ): Promise<LabelSnapshotRow[]> {
   const snap = await snapshot(threadIds, userId);
   for (const r of snap) {
-    const next = r.prevLabels.filter((l) => l !== INBOX);
+    const next = r.prevLabels.filter((l) => l !== INBOX && l !== TRASH && l !== SPAM);
     await prisma.thread.update({
       where: { id: r.id },
       data: { labels: next as unknown as Prisma.InputJsonValue },

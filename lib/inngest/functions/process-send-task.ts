@@ -70,7 +70,13 @@ export const processSendTaskFn = inngest.createFunction(
   async ({ event, step }) => {
     const { taskId, userId } = event.data;
 
-    const task = await step.run("load-task", () => getSendTaskForProcessing(taskId));
+    // Deliberately NOT wrapped in `step.run`. Inngest serializes step
+    // results to JSON to memoize them across retries, which mangles the
+    // attachment `Buffer` columns into plain `Record<string, number>`
+    // objects on the way back. The task load is an idempotent read, so
+    // letting it re-execute on each retry is fine — only the mutating
+    // / side-effectful operations below need step memoization.
+    const task = await getSendTaskForProcessing(taskId);
     if (!task) {
       // The user (or an admin tool) deleted the SendTask between enqueue
       // and worker run. Silently exit — there's nothing to send and

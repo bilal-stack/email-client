@@ -1,4 +1,3 @@
-import { AccountSwitcher } from "@/app/inbox/_components/account-switcher";
 import { DraftList } from "@/app/inbox/_components/draft-list";
 import { FolderNav } from "@/app/inbox/_components/folder-nav";
 import { SortToggle } from "@/app/inbox/_components/sort-toggle";
@@ -124,7 +123,8 @@ export default async function InboxPage({ searchParams }: InboxPageProps) {
     <div className="grid h-full grid-cols-1 md:grid-cols-[minmax(320px,400px)_1fr]">
       <section className="flex min-h-[60vh] flex-col border-zinc-200 md:border-r">
         <div className="space-y-3 border-b border-zinc-200 bg-white p-4">
-          <AccountSwitcher accounts={accounts} active={activeAccountId} />
+          {/* Account switching lives in the left-pane MailboxNavList; the
+              middle pane is folder navigation only. */}
           <FolderNav active={folder} />
           {folder !== "drafts" ? (
             <div className="flex justify-stretch sm:justify-end">

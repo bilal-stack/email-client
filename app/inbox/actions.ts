@@ -85,6 +85,9 @@ export async function getThread(input: z.infer<typeof getThreadInput>): Action<{
         subject: t.subject,
         accountId: t.account.id,
         accountEmail: t.account.emailAddress,
+        labels: Array.isArray(t.labels)
+          ? (t.labels as unknown[]).filter((l): l is string => typeof l === "string")
+          : [],
       },
       messages: await Promise.all(
         t.messages.map(async (m) => {
@@ -297,6 +300,35 @@ interface FanoutResult {
   failedAccountIds: string[];
 }
 
+/**
+ * Hard ceiling on a single provider mutation call (archive / trash /
+ * setLabels). Without this, a hanging Google or Microsoft endpoint would
+ * keep the Server Action's HTTP request socket open until Node's keepalive
+ * killed it (minutes), which in dev exhausts Chrome's 6-connections-per-host
+ * budget and locks the whole tab. 20 s is comfortably above p99 for these
+ * calls and short enough that a hung call surfaces as a normal action
+ * failure (the local mutation is then reverted via `revertLabels`).
+ */
+const PROVIDER_MUTATION_TIMEOUT_MS = 20_000;
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(
+          Object.assign(new Error(`${label} timed out after ${ms}ms`), {
+            name: "TimeoutError",
+          }),
+        ),
+      ms,
+    );
+  });
+  return Promise.race([p, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
 async function fanoutPerAccount(
   rows: OwnedThreadRow[],
   call: (accountId: string, providerMessageIds: string[]) => Promise<void>,
@@ -308,7 +340,11 @@ async function fanoutPerAccount(
       const group = byAccount[accountId] ?? [];
       const messageIds = group.flatMap((r) => r.providerMessageIds);
       if (messageIds.length === 0) return group.length;
-      await call(accountId, messageIds);
+      await withTimeout(
+        call(accountId, messageIds),
+        PROVIDER_MUTATION_TIMEOUT_MS,
+        `provider mutation for ${accountId}`,
+      );
       return group.length;
     }),
   );

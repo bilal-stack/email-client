@@ -17,70 +17,51 @@ generator client {
   provider = "prisma-client-js"
 }
 
-// ─── Auth.js v5 + Prisma adapter required models ─────────────────────────
-model User {
-  id            String        @id @default(cuid())
-  name          String?
-  email         String?       @unique
-  emailVerified DateTime?
-  image         String?
-  accounts      Account[]
-  sessions      Session[]
-  mailAccounts  MailAccount[]
-  drafts        Draft[]
-  sendTasks     SendTask[]
-  createdAt     DateTime      @default(now())
-}
-
-model Account {
-  id                String  @id @default(cuid())
-  userId            String
-  type              String
-  provider          String
-  providerAccountId String
-  refresh_token     String?
-  access_token      String?
-  expires_at        Int?
-  token_type        String?
-  scope             String?
-  id_token          String?
-  session_state     String?
-  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([provider, providerAccountId])
-}
-
-model Session {
-  id           String   @id @default(cuid())
-  sessionToken String   @unique
-  userId       String
-  expires      DateTime
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-}
-
-model VerificationToken {
-  identifier String
-  token      String   @unique
-  expires    DateTime
-
-  @@unique([identifier, token])
-}
-
-// ─── Our mailbox extension ───────────────────────────────────────────────
+// ─── Identity model ─────────────────────────────────────────────────────
+// We do NOT use Auth.js's PrismaAdapter (no User / Account / Session /
+// VerificationToken tables). Sessions are JWT-only; the JWT carries a
+// synthetic `userId` (a cuid we generate on first sign-in for a
+// previously-unseen (provider, emailAddress) pair). Subsequent sign-ins
+// with the same provider+email reuse the userId stored on the existing
+// MailAccount. The "add a mailbox" flow uses the add-mailbox-cookie to
+// pass the active session's userId through the OAuth round-trip so the
+// new MailAccount lands on the same logical user.
+//
+// Why no User table: PrismaAdapter and our signin-callback raced on User
+// creation (Auth.js v5's signIn callback fires BEFORE PrismaAdapter
+// persists, while our fallback tried to self-create — causing duplicate
+// case-only User rows in Postgres). Treating MailAccount as the identity
+// record kills the race and the abstraction we never used anyway —
+// every meaningful query was already scoped to MailAccount, not User.
+//
 // One row per connected mailbox. encryptedSecret is AES-256-GCM ciphertext
 // holding the OAuth tokens (or, for IMAP, the SMTP/IMAP password).
+// `emailAddress` is stored lowercased at write time so case-only variants
+// of the same address ("Foo@Bar.com" vs "foo@bar.com") can't create
+// duplicates.
 model MailAccount {
   id              String    @id @default(cuid())
+  /// Synthetic user grouping. Plain String — there is no User table to FK
+  /// against. Generated on first sign-in for a new (provider, email);
+  /// reused on every subsequent sign-in.
   userId          String
-  user            User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   provider        String // "gmail" | "graph" | "imap"
   emailAddress    String
   displayName     String?
+  /// Profile picture URL captured from the OAuth profile at sign-in. Used
+  /// for the avatar in the layout header. Optional.
+  image           String?
   encryptedSecret Bytes
   secretIv        Bytes
   secretTag       Bytes
   syncCursor      String? // historyId | delta token | UIDVALIDITY+UID
   lastSyncedAt    DateTime?
+  // Set by the Inngest sync worker the first time it sees an AuthError
+  // with `transient: false` (revoked refresh token). The UI surfaces a
+  // "reconnect" CTA when this is non-null; the next successful sign-in
+  // for the same provider/email overwrites the encrypted secret AND
+  // nulls this column.
+  needsReconnectAt DateTime?
   createdAt       DateTime  @default(now())
   threads         Thread[]
   messages        Message[]
@@ -88,6 +69,12 @@ model MailAccount {
   sendTasks       SendTask[]
 
   @@unique([userId, provider, emailAddress])
+  /// Lookup-by-credentials index: every sign-in does
+  /// `findFirst({ where: { provider, emailAddress } })` to decide whether
+  /// to reuse an existing userId or generate a fresh one. Indexed so the
+  /// query stays O(1) regardless of mailbox count.
+  @@index([provider, emailAddress])
+  @@index([userId])
 }
 
 // ─── Mail cache tables (populated by provider adapters via Inngest sync) ──
@@ -168,8 +155,10 @@ model Attachment {
 // is documented in spec.md non-goals.
 model Draft {
   id         String   @id @default(cuid())
+  /// Synthetic user grouping — see MailAccount.userId for the model. Plain
+  /// String column with no FK; ownership scoping happens in queries via
+  /// `where: { userId: session.user.id }`.
   userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   accountId  String
   account    MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)
@@ -217,8 +206,8 @@ model Draft {
 model SendTask {
   id            String   @id @default(cuid())
 
+  /// Synthetic user grouping — see MailAccount.userId for the model.
   userId        String
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   accountId     String
   account       MailAccount @relation(fields: [accountId], references: [id], onDelete: Cascade)

@@ -463,9 +463,14 @@ export class GmailProvider implements IEmailProvider {
       const secret = await getMailboxSecret(this.accountId);
       if (secret.kind !== "oauth") throw new Error("Expected OAuth secret on a Gmail account");
       const gmail = gmailClient(secret);
+      // Archive = "drop from every special folder". We strip INBOX
+      // (regular inbox archive), TRASH (rescuing a trashed thread), and
+      // SPAM (recovering from a spam classification). Gmail's
+      // batchModify silently ignores label-ids the message doesn't
+      // currently have, so this is safe to run from any source folder.
       await gmail.users.messages.batchModify({
         userId: "me",
-        requestBody: { ids, removeLabelIds: ["INBOX"] },
+        requestBody: { ids, removeLabelIds: ["INBOX", "TRASH", "SPAM"] },
       });
     } catch (e) {
       throw mapError(e);
