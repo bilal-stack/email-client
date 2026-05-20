@@ -1,5 +1,6 @@
 import { InstallReplayListener } from "@/components/install-replay-listener";
 import { RegisterServiceWorker } from "@/components/register-sw";
+import { Analytics } from "@vercel/analytics/next";
 import type { Metadata, Viewport } from "next";
 import NextTopLoader from "nextjs-toploader";
 import "./globals.css";
@@ -29,6 +30,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <RegisterServiceWorker />
         <InstallReplayListener />
         {children}
+        <Analytics />
       </body>
     </html>
   );
